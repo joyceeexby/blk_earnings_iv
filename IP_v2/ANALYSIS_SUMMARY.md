@@ -1,145 +1,134 @@
-# Earnings Implied Volatility Analysis - Complete Summary
+# Earnings Implied Volatility Analysis - Summary (Updated July 2025)
 
 ## Project Overview
-This project analyzes the relationship between **Implied Earnings Volatility Ratio (IEVR)** and **Realized Earnings Volatility Ratio (REVR)** using options data from WRDS. The analysis covers 100+ large-cap stocks from 2020-2023.
+This project analyzes the relationship between **Implied Earnings Volatility Ratio (IEVR)** and **Realized Earnings Volatility Ratio (REVR)** using options data from WRDS. The analysis covers 50 large-cap stocks from 2000-2023, using both pooled and individual stock regression approaches.
+
+---
 
 ## Methodology
 
 ### 1. Realized Earnings Volatility Ratio (REVR)
-- **Definition**: REVR = vol_t+4 / vol_t-3
-- **Calculation**: 
-  - Rolling volatility with 30-day window and 7-day half-life
-  - T-3: Friday before earnings announcement
-  - T+4: Friday after earnings announcement
+- **Definition:**
+  - REVR = (Post-earnings volatility) / (Pre-earnings volatility)
+  - Specifically, REVR = σ<sub>t+4</sub> / σ<sub>t-3</sub>, where:
+    - σ<sub>t-3</sub>: Realized volatility on the Friday before earnings (T-3)
+    - σ<sub>t+4</sub>: Realized volatility on the Friday after earnings (T+4)
+- **Calculation Steps:**
+  1. For each earnings event, identify the announcement date.
+  2. Calculate daily returns for the underlying stock.
+  3. Compute rolling volatility (30-day window, 7-day half-life) for each day.
+  4. Extract volatility values for T-3 and T+4 (closest available trading days).
+  5. Compute REVR as the ratio of these two volatilities.
+- **Purpose:** Measures how much realized volatility changes after earnings relative to before.
 
 ### 2. Implied Earnings Volatility Ratio (IEVR)
-- **Definition**: IEVR = IV at kink / Normative IV at maturity
-- **Calculation**:
-  - Position 30 days before earnings event
-  - Use kernel regression to estimate normative IV curve
-  - Find volatility kink between 20-40 days to earnings
-  - Calculate ratio of kink IV to normative IV
+- **Definition:**
+  - IEVR = (Implied volatility at the "kink") / (Normative implied volatility at same maturity)
+  - The "kink" is the point in the IV curve where implied volatility jumps due to the upcoming earnings event.
+- **How IV is obtained:**
+  - **Implied volatility values are taken directly from WRDS OptionMetrics** (`impl_volatility` field for each option contract).
+  - **We do NOT compute IV from option prices ourselves**; we use the pre-calculated values provided by WRDS.
+- **Options Considered:**
+  - **Type:** Only **call options** are used (to avoid put-call parity complications and liquidity issues).
+  - **Strikes:** At-the-money (ATM) or nearest-to-ATM strikes are selected for each event.
+  - **Maturities:**
+    - Focus on maturities that bracket the earnings date:
+      - **Short-term:** Option expiring just after the earnings date (captures event volatility)
+      - **Long-term:** Option expiring well after the event (serves as baseline)
+    - Typical maturities: 20-40 days to expiry, with the "kink" usually 1-2 weeks after earnings.
+  - **Filters:** Only options with sufficient liquidity (volume/open interest) are included.
+- **Calculation Steps:**
+  1. For each event, select the relevant call options (ATM, correct maturities).
+  2. **Construct the implied volatility term structure** (IV vs. time-to-expiry) using the `impl_volatility` values from WRDS.
+  3. **Estimate the "normative" (non-event) IV curve** using kernel regression or curve fitting (see below).
+  4. Identify the "kink"—the IV jump at the maturity just after earnings.
+  5. Compute IEVR as the ratio of the IV at the kink to the normative IV at the same maturity.
+- **Purpose:** Quantifies the market's expectation of volatility due to the earnings event, relative to normal conditions.
 
-### 3. Data Pipeline
-- **Source**: WRDS OptionMetrics (opprcd tables)
-- **Stocks**: 100+ large-cap S&P 500 constituents
-- **Period**: 2020-2023 (4 years)
-- **Direct IV Fetching**: Simplified pipeline using `impl_volatility` column directly
+#### More on Kernel Regression / Curve Fitting
+- **Why do we need it?**
+  - The observed IV term structure is "distorted" by the earnings event (the "kink"). To know what IV *would* be without the event, we need a smooth estimate of the "normal" IV curve.
+- **What is kernel regression?**
+  - **Kernel regression** is a non-parametric smoothing technique. It estimates the value of a function (here, IV as a function of time-to-expiry) at a given point by taking a weighted average of nearby observed values, with weights decreasing smoothly as you move away from the target point.
+  - In this context, for each maturity, we estimate the "normative" IV by averaging the IVs of options with similar (but not identical) maturities, giving more weight to those closer in time.
+  - This produces a smooth, continuous curve that represents what the IV term structure would look like *without* the earnings event.
+- **Why not just use a polynomial fit?**
+  - Kernel regression is more flexible and does not assume a specific functional form, making it well-suited for capturing the typical shape of the IV curve.
+- **Result:**
+  - The "normative" IV curve is used as the baseline, and the observed "kink" is compared to this baseline to compute IEVR.
 
-## Key Results (Expanded Analysis, July 2025)
+### 3. Data Construction
+- **Source:** WRDS OptionMetrics (option prices, implied volatilities, earnings dates)
+- **Stocks:** 50 large-cap S&P 500 constituents
+- **Period:** 2000-2023 (24 years)
+- **Event Selection:** All quarterly earnings events with sufficient option data
+- **Data Cleaning:** Remove NaNs, infinite values, and outliers (see Results)
 
-### Overall Sample Statistics
-- **Total Events Analyzed**: 1,935 earnings events
-- **Stocks with Data**: 173 stocks
-- **Date Range**: 2020-2023
-- **Success Rate**: 65% of attempted stock regressions
+### 4. Regression Analysis
+- **Pooled regressions:** All stocks combined, with stock and time fixed effects
+- **Individual regressions:** Separate regression for each stock
 
-### Regression Results (All Stocks)
+---
 
-- **Successful regressions**: 113 out of 173 stocks (65.3%)
-- **Mean IEVR coefficient**: 0.28
-- **Median IEVR coefficient**: 0.24
-- **Std Dev (IEVR coef)**: 0.93
-- **Mean R-squared**: 0.11
-- **Median R-squared**: 0.05
-- **Significant at 5% level**: 8 stocks (7.1%)
-- **Positive and significant**: 7 stocks
-- **Negative and significant**: 1 stock
+## Results
 
-*Note: All statistics are from individual stock-specific regressions (REVR = α + β × IEVR for each stock separately), not from pooled models.*
+### 1. Data Cleaning
+- Removed 2 rows with NaN values
+- Removed 1,074 rows with infinite values
+- Removed outliers from REVR and IEVR
+- **Final sample for regressions:** 2,880 events from 50 stocks
+- **Average IEVR:** 1.48
+- **Average REVR:** 1.29
 
-#### Top 10 Stocks by IEVR Coefficient:
-*Results from individual stock regressions (REVR = α + β × IEVR for each stock)*
+### 2. Pooled Regression Results
+- **Model 1 (Basic):** No significant relationship (R² = 0.000, p = 0.365)
+- **Model 2 (Stock Fixed Effects):**
+  - **IEVR coefficient:** 0.182 (p < 0.001)
+  - **R² = 0.102**
+- **Model 4 (Stock + Time Fixed Effects):**
+  - **IEVR coefficient:** 0.117 (p = 0.002)
+  - **R² = 0.119**
+- **Other models**: See `pooled_regression_summary.csv` for full details
 
-| Ticker | IEVR Coef | T-stat | P-value | R² | N Events |
-|--------|-----------|--------|---------|-----|----------|
-| ISRG   | 3.38      | 3.68   | 0.003   | 0.51| 15       |
-| NFLX   | 2.80      | 0.73   | 0.480   | 0.04| 15       |
-| TSLA   | 2.50      | 2.05   | 0.061   | 0.24| 15       |
-| CMG    | 2.23      | 1.09   | 0.294   | 0.08| 15       |
-| MS     | 2.20      | 1.74   | 0.105   | 0.19| 15       |
-| INTC   | 2.13      | 1.44   | 0.174   | 0.14| 15       |
-| VNO    | 1.96      | 1.98   | 0.105   | 0.44| 7        |
-| EQIX   | 1.93      | 2.42   | 0.094   | 0.66| 5        |
-| AVGO   | 1.80      | 1.42   | 0.178   | 0.13| 15       |
-| AMGN   | 1.63      | 2.95   | 0.011   | 0.40| 15       |
+### 3. Individual Stock Regression Results
+- **50 individual regressions** (one per stock)
+- **Significant regressions (p < 0.05):** 10 out of 50 (20.0%)
+- **Mean R-squared:** 0.032
+- **Median R-squared:** 0.008
+- **Mean IEVR coefficient:** 0.215
+- **Mean IEVR p-value:** 0.430
+- **Top 5 performers by R-squared:**
+    - AAPL: R²=0.184, β=0.987 (p<0.001)
+    - ORCL: R²=0.161, β=0.685 (p=0.002)
+    - AMGN: R²=0.117, β=0.663 (p=0.025)
+    - MRK: R²=0.114, β=0.605 (p=0.020)
+    - JNJ: R²=0.113, β=0.448 (p=0.010)
+- **See:** `individual_stock_regression_results.csv` and `significant_individual_regressions.csv`
 
-#### Top 10 Stocks by R-squared:
-*Results from individual stock regressions (REVR = α + β × IEVR for each stock)*
-
-| Ticker | R²    | IEVR Coef | T-stat | P-value | N Events |
-|--------|-------|-----------|--------|---------|----------|
-| XEL    | 0.68  | 0.25      | 2.93   | 0.043   | 6        |
-| CMS    | 0.67  | 0.18      | 2.03   | 0.179   | 4        |
-| EQIX   | 0.66  | 1.93      | 2.42   | 0.094   | 5        |
-| SRE    | 0.60  | -1.14     | -1.24  | 0.433   | 3        |
-| TXN    | 0.55  | 1.34      | 4.00   | 0.002   | 15       |
-| ISRG   | 0.51  | 3.38      | 3.68   | 0.003   | 15       |
-| FTV    | 0.50  | 0.37      | 1.00   | 0.500   | 3        |
-| VNO    | 0.44  | 1.96      | 1.98   | 0.105   | 7        |
-| AMGN   | 0.40  | 1.63      | 2.95   | 0.011   | 15       |
-| REGN   | 0.39  | 1.01      | 2.52   | 0.030   | 12       |
-
-#### Sample Size Analysis:
-- **Mean events per stock**: 14.0
-- **Median events per stock**: 15.0
-- **Stocks with 10+ events**: 103
-- **Stocks with 20+ events**: 0
-
-### Temporal Analysis
-- **No year-by-year regression results** could be created due to missing or invalid data (NaNs or infs) in the IEVR/REVR columns for each year.
-
-### Future Model Specifications
-
-The following pooled regression models will be tested in future analysis:
-
-- **Model 1**: REVR = α + β × IEVR (already done)
-- **Model 2**: REVR = α + β × IEVR + Stock Fixed Effects
-- **Model 3**: REVR = α + β × IEVR + Time Fixed Effects
-- **Model 4**: REVR = α + β × IEVR + Stock + Time Fixed Effects
+---
 
 ## Key Findings
+- **IEVR has significant predictive power** for REVR in pooled regressions with stock and time controls.
+- **Individual stock regressions** show significant results for 20% of stocks, but most have low R-squared (limited explanatory power).
+- **Top stocks** (AAPL, ORCL, AMGN, MRK, JNJ) show the strongest IEVR-REVR relationship.
+- **Data quality and outlier handling** are critical for robust results.
 
-### 1. Limited Predictive Power
-- **Low R-squared values**: Most regressions show R² < 0.20
-- **Mixed coefficients**: Some positive, some negative IEVR coefficients
-- **High p-values**: Most coefficients not statistically significant
-
-### 2. Stock-Specific Variation
-- **A few stocks show strong relationships** (e.g., ISRG, TXN, AMGN)
-- **Most stocks**: Weak or insignificant relationship between IEVR and REVR
-
-### 3. Time Period Effects
-- **No year-by-year results** due to data quality issues (NaNs/infs in annual splits)
-- **Market conditions**: Not directly analyzed due to above
-
-## Technical Achievements
-
-- **Automated analysis for 173 stocks**
-- **Comprehensive results saved for all stocks**
-- **Robust error handling and reporting**
-- **Direct IV fetching and pipeline optimization**
-
-## Lessons Learned
-
-- **Data quality is critical**: NaNs/infs can block regression analysis, especially in temporal splits
-- **IEVR has limited predictive power** for REVR in most cases
-- **Stock-level analysis is more robust than year-by-year splits with current data
-
-## Next Steps
-
-- [ ] Investigate and clean NaN/inf values in IEVR/REVR for year-by-year analysis
-- [ ] Explore sector-specific or regime-based regressions
-- [ ] Consider alternative volatility measures or additional control variables
+---
 
 ## Files Generated
-- `expanded_earnings_analysis_results.csv`: Complete dataset
-- `all_stocks_regression_results.csv`: Individual stock regressions
-- `significant_regressions.csv`: Stocks with significant IEVR coefficients
-- `top_performers_by_r2.csv`: Top 20 by R²
-- `summary_statistics.csv`: Descriptive stats
-- `correlation_matrix.csv`: Correlations
-- `summary_analysis.png`: Summary plots
+- `expanded_earnings_analysis_results.csv` — Cleaned event-level data
+- `pooled_regression_summary.csv` — Pooled regression models
+- `individual_stock_regression_results.csv` — All individual stock regressions
+- `significant_individual_regressions.csv` — Only significant individual regressions
+- `top_performers_individual.csv` — Top stocks by R-squared
 
-## Conclusion
-The expanded analysis confirms that **IEVR has limited predictive power for REVR** across a large sample of stocks. While a handful of stocks show stronger relationships, the overall evidence suggests that implied volatility from options markets does not reliably predict realized volatility around earnings events. Data quality remains a key challenge for temporal analysis. These findings have important implications for options trading strategies and volatility forecasting models. 
+---
+
+## Next Steps
+- Explore additional controls and nonlinearities
+- Investigate why some stocks show stronger relationships
+- Consider alternative volatility measures
+
+---
+
+*Last updated: 14 July 2025* 
