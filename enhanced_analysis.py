@@ -267,47 +267,73 @@ def build_regression_dataset(earnings_options_df, realized_vol_df, target_window
                 feature_vector = []
                 feature_names = []
                 
-                # Always include implied volatility if available
-                if 'impl_volatility' in available_columns:
-                    feature_vector.extend([
-                        feature_window_data['impl_volatility'].mean(),  # Average IV
-                        feature_window_data['impl_volatility'].std()    # IV dispersion
-                    ])
-                    feature_names.extend(['avg_iv', 'iv_std'])
+                iv_diffs = []
                 
-                # Add other features if available
-                if 'volume' in available_columns:
-                    feature_vector.append(feature_window_data['volume'].mean())
-                    feature_names.append('avg_volume')
-                else:
-                    feature_vector.append(0)  # Default value
-                    feature_names.append('avg_volume')
+                for day in feature_window_data['date'].unique():
+                    day_data = feature_window_data[feature_window_data['date'] == day]
+                    if len(day_data) < 2:
+                        continue  # not enough contracts
+                    
+                    earnings_day = (day_data['earnings_date'] - day).dt.days.iloc[0]
+                    
+                    # Separate options by pre- and post-earnings expiration
+                    pre_earnings = day_data[day_data['tte'] < earnings_day]
+                    post_earnings = day_data[day_data['tte'] > earnings_day]
+                    
+                    if len(pre_earnings) == 0 or len(post_earnings) == 0:
+                        continue
+                    
+                    # Take average IV from both sides
+                    iv_pre = pre_earnings['impl_volatility'].mean()
+                    iv_post = post_earnings['impl_volatility'].mean()
+                    
+                    iv_diffs.append(abs(iv_post - iv_pre))
                 
-                if 'bid_ask_spread' in available_columns:
-                    feature_vector.append(feature_window_data['bid_ask_spread'].mean())
-                    feature_names.append('avg_spread')
+                # Final feature
+                if len(iv_diffs) > 0:
+                    avg_iv_jump = np.mean(iv_diffs)
+                    feature_vector.append(avg_iv_jump)
+                    feature_names.append('avg_iv_jump')
                 else:
-                    feature_vector.append(0)  # Default value
-                    feature_names.append('avg_spread')
+                    continue  # skip if no IV jumps could be calculated
+                    
+                # # Add other features if available
+                # if 'volume' in available_columns:
+                #     feature_vector.append(feature_window_data['volume'].mean())
+                #     feature_names.append('avg_volume')
+                # else:
+                #     feature_vector.append(0)  # Default value
+                #     feature_names.append('avg_volume')
                 
-                if 'tte' in available_columns:
-                    feature_vector.append(feature_window_data['tte'].mean())
-                    feature_names.append('avg_tte')
-                else:
-                    feature_vector.append(30)  # Default TTE
-                    feature_names.append('avg_tte')
+                # if 'bid_ask_spread' in available_columns:
+                #     feature_vector.append(feature_window_data['bid_ask_spread'].mean())
+                #     feature_names.append('avg_spread')
+                # else:
+                #     feature_vector.append(0)  # Default value
+                #     feature_names.append('avg_spread')
                 
-                if 'moneyness' in available_columns:
-                    feature_vector.append(feature_window_data['moneyness'].mean())
-                    feature_names.append('avg_moneyness')
-                else:
-                    feature_vector.append(1.0)  # Default moneyness
-                    feature_names.append('avg_moneyness')
+                # if 'tte' in available_columns:
+                #     feature_vector.append(feature_window_data['tte'].mean())
+                #     feature_names.append('avg_tte')
+                # else:
+                #     feature_vector.append(30)  # Default TTE
+                #     feature_names.append('avg_tte')
+                
+                # if 'moneyness' in available_columns:
+                #     feature_vector.append(feature_window_data['moneyness'].mean())
+                #     feature_names.append('avg_moneyness')
+                # else:
+                #     feature_vector.append(1.0)  # Default moneyness
+                #     feature_names.append('avg_moneyness')
                 
                 # Target: realized volatility in the target window
                 target_rv_col = f'realized_vol_{target_window}d'
-                if target_rv_col in target_window_data.columns:
-                    target_rv = target_window_data[target_rv_col].mean()
+                    if target_rv_col in target_window_data.columns:
+                        rv_series = target_window_data[target_rv_col]
+                        if not rv_series.isna().all():
+                            target_rv = rv_series.ewm(span=target_window).mean().iloc[-1]
+                        else:
+                            continue  # skip if all NaNs
                 else:
                     # Try alternative column names
                     rv_columns = [col for col in target_window_data.columns if 'vol' in col.lower()]
@@ -383,9 +409,9 @@ def run_single_name_case_study(pipeline, ticker, start_date='2023-01-01', end_da
     earnings_options = pipeline.merge_earnings_options()
     
     # Run analyses
-    pipeline.analyze_volatility_smile()
-    pipeline.earnings_event_study()
-    pipeline.analyze_term_structure()
+    # pipeline.analyze_volatility_smile()
+    # pipeline.earnings_event_study()
+    # pipeline.analyze_term_structure()
     
     # Volume analysis
     volume_analysis = analyze_option_volume_vs_stock_adv(filtered_options, stock_prices, ticker)
