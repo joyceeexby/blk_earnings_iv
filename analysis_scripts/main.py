@@ -40,8 +40,8 @@ def run_expanded_analysis():
 
     try:
         # Connect to WRDS
-        db = wrds.Connection(wrds_username="sami_sellami",
-                             password="xampok-9Hezfy-cahveq")
+        db = wrds.Connection(wrds_username="joycexu020113",
+                             password="JoyceXu020205")
         print("✓ Connected to WRDS")
 
         # Get stock list

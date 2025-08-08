@@ -1,41 +1,29 @@
+#!/usr/bin/env python3
 """
-Non-linear Machine Learning Models for IEVR-REVR Analysis
-
-This module implements various non-linear models to explore the relationship between
-Implied Earnings Volatility Ratio (IEVR) and Realized Earnings Volatility Ratio (REVR).
-
-Models included:
-- Random Forest Regression
-- XGBoost Regression
-- Model comparison and evaluation
+Nonlinear Models with Fama-French 5-Factor Model
+Updated version that includes Fama-French 5 factors as additional features.
 """
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 import xgboost as xgb
-from sklearn.inspection import permutation_importance
 import warnings
 warnings.filterwarnings('ignore')
 
-class NonlinearModelAnalysis:
+class NonlinearModelAnalysisWithFF:
     """
-    Class for implementing and comparing non-linear models for IEVR-REVR analysis.
+    Nonlinear model analysis with Fama-French 5 factors.
     """
     
-    def __init__(self, data_file='data_files/expanded_earnings_analysis_results.csv'):
+    def __init__(self, data_file='data_files/earnings_with_fama_french_5factor_monthly_match.csv'):
         """
-        Initialize the analysis with data.
-        
-        Parameters:
-        -----------
-        data_file : str
-            Path to the CSV file containing the analysis results
+        Initialize with data file that includes Fama-French 5 factors.
         """
         self.data_file = data_file
         self.data = None
@@ -43,18 +31,21 @@ class NonlinearModelAnalysis:
         self.X_test = None
         self.y_train = None
         self.y_test = None
+        self.X_train_scaled = None
+        self.X_test_scaled = None
         self.scaler = StandardScaler()
         self.models = {}
         self.results = {}
+        self.linear_results = None
         
         # Load and prepare data
         self.load_and_prepare_data()
     
     def load_and_prepare_data(self):
         """
-        Load data and prepare features for modeling.
+        Load data and prepare features for modeling including Fama-French 5 factors.
         """
-        print("Loading and preparing data for non-linear modeling...")
+        print("Loading and preparing data for non-linear modeling with Fama-French 5 factors...")
         
         # Load data
         self.data = pd.read_csv(self.data_file)
@@ -66,12 +57,17 @@ class NonlinearModelAnalysis:
         # Create additional features
         self.create_features()
         
-        # Prepare features and target - only use truly independent features
-        feature_columns = ['ievr', 'normative_iv_rv_ratio', 'skew_ratio', 'spx_ievr']  # Independent features including S&P 500 IEVR
+        # Prepare features and target - include Fama-French 5 factors
+        base_features = ['ievr', 'normative_iv_rv_ratio', 'skew_ratio', 'spx_ievr']
+        ff_features = ['SMB', 'HML', 'RMW', 'CMA', 'RF', 'Mkt_Return', 'Mkt_Volatility', 'Factor_Volatility']
+        
+        # Combine all features
+        feature_columns = base_features + ff_features
+        
         # Remove columns that might not exist
         available_features = [col for col in feature_columns if col in self.data.columns]
         
-        if len(available_features) < 2:
+        if len(available_features) < 4:
             # Fallback to basic features
             available_features = ['ievr']
             print("Warning: Limited features available, using only IEVR")
@@ -84,8 +80,9 @@ class NonlinearModelAnalysis:
         X = X[mask]
         y = y[mask]
         
-        print(f"Final dataset: {len(X)} observations, {len(available_features)} features")
-        print(f"Features: {available_features}")
+        print("Final dataset: {} observations, {} features".format(len(X), len(available_features)))
+        print("Base features: {}".format([f for f in base_features if f in available_features]))
+        print("Fama-French 5 factors: {}".format([f for f in ff_features if f in available_features]))
         
         # Split data
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
@@ -123,10 +120,6 @@ class NonlinearModelAnalysis:
         """
         Create additional features for modeling.
         """
-        # Note: Removed vol_st, vol_mt, and volatility_spread features to avoid circular dependency
-        # These are components of the REVR target variable (REVR = vol_st / vol_mt)
-        # Only IEVR is truly independent of the target
-        
         # Create normative IV/RV ratio feature
         self.create_normative_iv_rv_ratio()
         
@@ -135,6 +128,9 @@ class NonlinearModelAnalysis:
         
         # Create S&P 500 IEVR feature
         self.create_spx_ievr_feature()
+        
+        # Create Fama-French 5-factor interaction features
+        self.create_ff_interaction_features()
         
         # Log transformations (for positive values)
         mask_positive = (self.data['revr'] > 0) & (self.data['ievr'] > 0)
@@ -145,155 +141,113 @@ class NonlinearModelAnalysis:
         # Squared terms
         self.data['ievr_squared'] = self.data['ievr'] ** 2
     
+    def create_ff_interaction_features(self):
+        """
+        Create interaction features between IEVR and Fama-French 5 factors.
+        """
+        print("Creating Fama-French 5-factor interaction features...")
+        
+        # Check if Fama-French factors exist
+        ff_factors = ['SMB', 'HML', 'RMW', 'CMA', 'RF', 'Mkt_Return', 'Mkt_Volatility']
+        available_ff = [f for f in ff_factors if f in self.data.columns]
+        
+        if len(available_ff) > 0:
+            # Create IEVR interactions with each factor
+            for factor in available_ff:
+                interaction_name = f'IEVR_{factor}_Interaction'
+                self.data[interaction_name] = self.data['ievr'] * self.data[factor]
+                print(f"  Created {interaction_name}")
+            
+            # Create market regime features
+            if 'Mkt_Volatility' in self.data.columns:
+                # High volatility regime
+                self.data['High_Mkt_Vol_Regime'] = (self.data['Mkt_Volatility'] > 
+                                                   self.data['Mkt_Volatility'].quantile(0.75)).astype(int)
+                
+                # IEVR in high volatility regime
+                self.data['IEVR_High_Vol_Regime'] = self.data['ievr'] * self.data['High_Mkt_Vol_Regime']
+                print("  Created market volatility regime features")
+            
+            # Create factor momentum features
+            for factor in ['SMB', 'HML', 'RMW', 'CMA']:
+                if factor in self.data.columns:
+                    # 6-month momentum
+                    momentum_name = f'{factor}_Momentum_6m'
+                    self.data[momentum_name] = self.data[factor].rolling(window=6).mean()
+                    
+                    # IEVR interaction with momentum
+                    interaction_name = f'IEVR_{momentum_name}_Interaction'
+                    self.data[interaction_name] = self.data['ievr'] * self.data[momentum_name]
+                    print(f"  Created {interaction_name}")
+        else:
+            print("  No Fama-French 5 factors found in data")
+    
     def create_spx_ievr_feature(self):
         """
         Create S&P 500 IEVR feature.
-        This captures market-level volatility expectations for comparison with individual stock IEVR.
         """
         print("Creating S&P 500 IEVR feature...")
         
-        # Check if we have the necessary data
         if 'spx_ievr' not in self.data.columns:
             print("Warning: 'spx_ievr' not found in data. Creating placeholder.")
-            # Create a placeholder - in practice, this should come from your IEVR calculation
-            self.data['spx_ievr'] = 1.0  # Placeholder (no market effect)
+            self.data['spx_ievr'] = 1.0
         else:
-            # Check if the column exists but is empty
             if self.data['spx_ievr'].isna().all():
                 print("Warning: 'spx_ievr' column exists but is empty. Creating placeholder.")
-                self.data['spx_ievr'] = 1.0  # Placeholder (no market effect)
+                self.data['spx_ievr'] = 1.0
         
-        # Handle infinite values
         self.data['spx_ievr'] = self.data['spx_ievr'].replace([np.inf, -np.inf], np.nan)
-        
         print(f"Created spx_ievr feature. Non-null values: {self.data['spx_ievr'].notna().sum()}")
-        
-        # Print summary statistics
-        if self.data['spx_ievr'].notna().sum() > 0:
-            print(f"  Mean: {self.data['spx_ievr'].mean():.4f}")
-            print(f"  Std: {self.data['spx_ievr'].std():.4f}")
-            print(f"  Min: {self.data['spx_ievr'].min():.4f}")
-            print(f"  Max: {self.data['spx_ievr'].max():.4f}")
-            
-            # Check for reasonable values
-            if 0.5 <= self.data['spx_ievr'].mean() <= 2.0:
-                print(f"  ✓ S&P 500 IEVR is in reasonable range")
-            else:
-                print(f"  ⚠ S&P 500 IEVR mean ({self.data['spx_ievr'].mean():.3f}) seems unusual")
-            
-            # Note: Removed relative_ievr feature to avoid multicollinearity with individual ievr and spx_ievr
-            print(f"  ✓ Using individual ievr and spx_ievr features (no ratio to avoid redundancy)")
-        else:
-            print("  ⚠ No valid S&P 500 IEVR data available")
     
     def create_normative_iv_rv_ratio(self):
         """
         Create normative IV/RV ratio feature.
-        This calculates the ratio of medium-term implied vol to medium-term realized vol
-        at 30 days before earnings (same time point as normative implied vol in IEVR).
         """
         print("Creating normative IV/RV ratio feature...")
         
-        # Check if we have the necessary data
         if 'normative_implied_vol' not in self.data.columns:
             print("Warning: 'normative_implied_vol' not found in data. Creating placeholder.")
-            # Create a placeholder - in practice, this should come from your IEVR calculation
-            self.data['normative_implied_vol'] = self.data['ievr'] * 1.0  # Placeholder
+            self.data['normative_implied_vol'] = self.data['ievr'] * 1.0
         
         if 'normative_realized_vol' not in self.data.columns:
             print("Warning: 'normative_realized_vol' not found in data. Creating placeholder.")
-            # Create a placeholder - in practice, this should come from your REVR calculation
-            self.data['normative_realized_vol'] = 1.0  # Placeholder
+            self.data['normative_realized_vol'] = 1.0
         
-        # Calculate the ratio
         mask = (self.data['normative_implied_vol'] > 0) & (self.data['normative_realized_vol'] > 0)
         self.data.loc[mask, 'normative_iv_rv_ratio'] = (
             self.data.loc[mask, 'normative_implied_vol'] / 
             self.data.loc[mask, 'normative_realized_vol']
         )
         
-        # Handle infinite values
         self.data['normative_iv_rv_ratio'] = self.data['normative_iv_rv_ratio'].replace([np.inf, -np.inf], np.nan)
-        
         print(f"Created normative_iv_rv_ratio feature. Non-null values: {self.data['normative_iv_rv_ratio'].notna().sum()}")
-        
-        # Print summary statistics
-        if self.data['normative_iv_rv_ratio'].notna().sum() > 0:
-            print(f"  Mean: {self.data['normative_iv_rv_ratio'].mean():.4f}")
-            print(f"  Std: {self.data['normative_iv_rv_ratio'].std():.4f}")
-            print(f"  Min: {self.data['normative_iv_rv_ratio'].min():.4f}")
-            print(f"  Max: {self.data['normative_iv_rv_ratio'].max():.4f}")
-            
-            # Print additional diagnostics
-            print(f"\nNormative Values Summary:")
-            print(f"  Normative Implied Vol - Mean: {self.data['normative_implied_vol'].mean():.4f}")
-            print(f"  Normative Realized Vol - Mean: {self.data['normative_realized_vol'].mean():.4f}")
-            print(f"  IV/RV Ratio - Mean: {self.data['normative_iv_rv_ratio'].mean():.4f}")
-            
-            # Check for reasonable values
-            if self.data['normative_iv_rv_ratio'].mean() > 1.0:
-                print(f"  ✓ IV > RV on average (typical volatility risk premium)")
-            else:
-                print(f"  ⚠ RV > IV on average (unusual)")
-    
-
     
     def create_skew_ratio(self):
         """
-        Create skew ratio feature (95Put IV / 105Call IV).
-        This captures the directional bias in volatility expectations.
+        Create skew ratio feature.
         """
-        print("Creating skew ratio feature (90Put / 110Call)...")
+        print("Creating skew ratio feature...")
         
-        # Check if we have the necessary data
         if 'skew_ratio' not in self.data.columns:
             print("Warning: 'skew_ratio' not found in data. Creating placeholder.")
-            # Create a placeholder - in practice, this should come from your IEVR calculation
-            self.data['skew_ratio'] = 1.0  # Placeholder (no skew)
+            self.data['skew_ratio'] = 1.0
         else:
-            # Check if the column exists but is empty
             if self.data['skew_ratio'].isna().all():
                 print("Warning: 'skew_ratio' column exists but is empty. Creating placeholder.")
-                self.data['skew_ratio'] = 1.0  # Placeholder (no skew)
+                self.data['skew_ratio'] = 1.0
         
-        # Handle infinite values
         self.data['skew_ratio'] = self.data['skew_ratio'].replace([np.inf, -np.inf], np.nan)
-        
         print(f"Created skew_ratio feature. Non-null values: {self.data['skew_ratio'].notna().sum()}")
-        
-        # Print summary statistics
-        if self.data['skew_ratio'].notna().sum() > 0:
-            print(f"  Mean: {self.data['skew_ratio'].mean():.4f}")
-            print(f"  Std: {self.data['skew_ratio'].std():.4f}")
-            print(f"  Min: {self.data['skew_ratio'].min():.4f}")
-            print(f"  Max: {self.data['skew_ratio'].max():.4f}")
-            
-            # Check for reasonable values
-            if self.data['skew_ratio'].mean() > 1.0:
-                print(f"  ✓ Put skew > Call skew on average (typical for earnings)")
-            else:
-                print(f"  ⚠ Call skew > Put skew on average (unusual)")
-            
-            # Check correlation with REVR
-            correlation = self.data['revr'].corr(self.data['skew_ratio'])
-            print(f"  Correlation with REVR: {correlation:.4f}")
-            
-            if abs(correlation) > 0.1:
-                print(f"  ✓ Skew ratio shows meaningful correlation with REVR")
-            else:
-                print(f"  ⚠ Skew ratio shows weak correlation with REVR")
     
     def train_multiple_linear_regression(self):
         """
-        Train Multiple Linear Regression model using the same features as other models.
-        This provides a linear baseline for comparison with nonlinear models.
+        Train Multiple Linear Regression model with Fama-French 5 factors.
         """
         print("\n" + "="*60)
-        print("TRAINING MULTIPLE LINEAR REGRESSION MODEL")
+        print("TRAINING MULTIPLE LINEAR REGRESSION MODEL WITH FF 5-FACTORS")
         print("="*60)
         
         try:
-            # Import statsmodels for detailed regression analysis
             import statsmodels.api as sm
             
             # Prepare data for statsmodels (add constant)
@@ -307,7 +261,7 @@ class NonlinearModelAnalysis:
             self.linear_model = model
             
             # Print detailed summary
-            print("\nMultiple Linear Regression Results:")
+            print("\nMultiple Linear Regression Results (with FF 5-factors):")
             print("="*50)
             print(model.summary())
             
@@ -316,8 +270,6 @@ class NonlinearModelAnalysis:
             y_pred_test = model.predict(X_test_with_constant)
             
             # Calculate metrics
-            from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
-            
             train_r2 = r2_score(self.y_train, y_pred_train)
             test_r2 = r2_score(self.y_test, y_pred_test)
             train_rmse = np.sqrt(mean_squared_error(self.y_train, y_pred_train))
@@ -372,19 +324,13 @@ class NonlinearModelAnalysis:
     
     def train_random_forest(self, optimize_hyperparameters=True):
         """
-        Train Random Forest model.
-        
-        Parameters:
-        -----------
-        optimize_hyperparameters : bool
-            Whether to perform hyperparameter optimization
+        Train Random Forest model with Fama-French 5 factors.
         """
         print("\n" + "="*60)
-        print("TRAINING RANDOM FOREST MODEL")
+        print("TRAINING RANDOM FOREST MODEL WITH FF 5-FACTORS")
         print("="*60)
         
         if optimize_hyperparameters:
-            # Hyperparameter grid for optimization
             param_grid = {
                 'n_estimators': [50, 100, 200],
                 'max_depth': [3, 5, 7, None],
@@ -401,10 +347,11 @@ class NonlinearModelAnalysis:
             best_rf = grid_search.best_estimator_
             print(f"Best parameters: {grid_search.best_params_}")
         else:
-            # Use default parameters
             best_rf = RandomForestRegressor(
                 n_estimators=100, 
-                max_depth=5, 
+                max_depth=7,
+                min_samples_split=5,
+                min_samples_leaf=2,
                 random_state=42
             )
             best_rf.fit(self.X_train_scaled, self.y_train)
@@ -419,25 +366,18 @@ class NonlinearModelAnalysis:
     
     def train_xgboost(self, optimize_hyperparameters=True):
         """
-        Train XGBoost model.
-        
-        Parameters:
-        -----------
-        optimize_hyperparameters : bool
-            Whether to perform hyperparameter optimization
+        Train XGBoost model with Fama-French 5 factors.
         """
         print("\n" + "="*60)
-        print("TRAINING XGBOOST MODEL")
+        print("TRAINING XGBOOST MODEL WITH FF 5-FACTORS")
         print("="*60)
         
         if optimize_hyperparameters:
-            # Hyperparameter grid for optimization
             param_grid = {
                 'n_estimators': [50, 100, 200],
                 'max_depth': [3, 5, 7],
                 'learning_rate': [0.01, 0.1, 0.2],
-                'subsample': [0.8, 0.9, 1.0],
-                'colsample_bytree': [0.8, 0.9, 1.0]
+                'subsample': [0.8, 0.9, 1.0]
             }
             
             xgb_model = xgb.XGBRegressor(random_state=42)
@@ -449,11 +389,11 @@ class NonlinearModelAnalysis:
             best_xgb = grid_search.best_estimator_
             print(f"Best parameters: {grid_search.best_params_}")
         else:
-            # Use default parameters
             best_xgb = xgb.XGBRegressor(
                 n_estimators=100,
                 max_depth=5,
                 learning_rate=0.1,
+                subsample=0.9,
                 random_state=42
             )
             best_xgb.fit(self.X_train_scaled, self.y_train)
@@ -469,21 +409,18 @@ class NonlinearModelAnalysis:
     def evaluate_model(self, model_name, model_display_name):
         """
         Evaluate a trained model.
-        
-        Parameters:
-        -----------
-        model_name : str
-            Key name of the model in self.models
-        model_display_name : str
-            Display name for output
         """
+        if model_name not in self.models:
+            print(f"Model {model_name} not found")
+            return
+        
         model = self.models[model_name]
         
-        # Predictions
+        # Make predictions
         y_train_pred = model.predict(self.X_train_scaled)
         y_test_pred = model.predict(self.X_test_scaled)
         
-        # Metrics
+        # Calculate metrics
         train_r2 = r2_score(self.y_train, y_train_pred)
         test_r2 = r2_score(self.y_test, y_test_pred)
         train_rmse = np.sqrt(mean_squared_error(self.y_train, y_train_pred))
@@ -493,6 +430,8 @@ class NonlinearModelAnalysis:
         
         # Cross-validation
         cv_scores = cross_val_score(model, self.X_train_scaled, self.y_train, cv=5, scoring='r2')
+        cv_mean = cv_scores.mean()
+        cv_std = cv_scores.std()
         
         # Store results
         self.results[model_name] = {
@@ -502,8 +441,8 @@ class NonlinearModelAnalysis:
             'test_rmse': test_rmse,
             'train_mae': train_mae,
             'test_mae': test_mae,
-            'cv_mean': cv_scores.mean(),
-            'cv_std': cv_scores.std(),
+            'cv_mean': cv_mean,
+            'cv_std': cv_std,
             'y_train_pred': y_train_pred,
             'y_test_pred': y_test_pred
         }
@@ -512,180 +451,84 @@ class NonlinearModelAnalysis:
         print(f"\n{model_display_name} Results:")
         print(f"  Training R²: {train_r2:.4f}")
         print(f"  Test R²: {test_r2:.4f}")
+        print(f"  CV R²: {cv_mean:.4f} (±{cv_std:.4f})")
         print(f"  Training RMSE: {train_rmse:.4f}")
         print(f"  Test RMSE: {test_rmse:.4f}")
         print(f"  Training MAE: {train_mae:.4f}")
         print(f"  Test MAE: {test_mae:.4f}")
-        print(f"  CV R²: {cv_scores.mean():.4f} (±{cv_scores.std():.4f})")
     
     def analyze_feature_importance(self):
         """
-        Analyze feature importance for all models.
+        Analyze feature importance for models that support it.
         """
         print("\n" + "="*60)
-        print("FEATURE IMPORTANCE ANALYSIS")
+        print("FEATURE IMPORTANCE ANALYSIS (FF 5-FACTORS)")
         print("="*60)
-        
-        feature_names = self.X_train.columns.tolist()
         
         for model_name, model in self.models.items():
-            print(f"\n{model_name.upper()} Feature Importance:")
-            
             if hasattr(model, 'feature_importances_'):
-                # Tree-based models have feature_importances_
                 importances = model.feature_importances_
-                indices = np.argsort(importances)[::-1]
+                feature_names = self.X_train.columns.tolist()
                 
-                for i, idx in enumerate(indices):
-                    print(f"  {feature_names[idx]}: {importances[idx]:.4f}")
-            
-            # Permutation importance (more robust)
-            try:
-                perm_importance = permutation_importance(
-                    model, self.X_test_scaled, self.y_test, 
-                    n_repeats=10, random_state=42
-                )
+                # Create importance DataFrame
+                importance_df = pd.DataFrame({
+                    'feature': feature_names,
+                    'importance': importances
+                }).sort_values('importance', ascending=False)
                 
-                print(f"\n{model_name.upper()} Permutation Importance:")
-                perm_indices = np.argsort(perm_importance.importances_mean)[::-1]
+                print(f"\n{model_name.replace('_', ' ').title()} Feature Importance:")
+                print("-" * 40)
                 
-                for i, idx in enumerate(perm_indices):
-                    print(f"  {feature_names[idx]}: {perm_importance.importances_mean[idx]:.4f} "
-                          f"(±{perm_importance.importances_std[idx]:.4f})")
-            except Exception as e:
-                print(f"  Permutation importance failed: {e}")
+                for i, row in importance_df.head(10).iterrows():
+                    print(f"  {row['feature']}: {row['importance']:.4f}")
+                
+                # Categorize features
+                ff_features = [f for f in feature_names if any(ff in f for ff in ['SMB', 'HML', 'RMW', 'CMA', 'RF'])]
+                base_features = [f for f in feature_names if f not in ff_features]
+                
+                ff_importance = importance_df[importance_df['feature'].isin(ff_features)]['importance'].sum()
+                base_importance = importance_df[importance_df['feature'].isin(base_features)]['importance'].sum()
+                
+                print(f"\n  Fama-French 5 factors total importance: {ff_importance:.4f}")
+                print(f"  Base features total importance: {base_importance:.4f}")
     
-    def plot_model_comparison(self):
+    def run_complete_analysis(self, optimize_hyperparameters=True):
         """
-        Create comparison plots for all models.
+        Run complete analysis including linear and non-linear models with FF 5 factors.
         """
+        print("="*80)
+        print("COMPREHENSIVE MACHINE LEARNING ANALYSIS WITH FAMA-FRENCH 5-FACTORS")
+        print("="*80)
+        
+        # Train linear regression first (baseline)
         print("\n" + "="*60)
-        print("CREATING MODEL COMPARISON PLOTS")
+        print("LINEAR BASELINE MODEL")
         print("="*60)
+        self.train_multiple_linear_regression()
         
-        # Create subplots
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle('Non-linear Model Comparison: IEVR vs REVR', fontsize=16)
+        # Train non-linear models
+        print("\n" + "="*60)
+        print("NON-LINEAR MODELS")
+        print("="*60)
+        self.train_random_forest(optimize_hyperparameters)
+        self.train_xgboost(optimize_hyperparameters)
         
-        # Plot 1: Actual vs Predicted (Test Set)
-        ax1 = axes[0, 0]
-        colors = ['red', 'blue', 'green']  # Red for linear regression
+        # Analyze feature importance
+        self.analyze_feature_importance()
         
-        # Add linear regression if available
-        if hasattr(self, 'linear_results'):
-            ax1.scatter(self.y_test, self.linear_results['y_pred_test'], 
-                       alpha=0.6, label='Linear Regression', color='red', s=50)
+        # Print summary
+        self.print_summary_table()
         
-        # Add non-linear models
-        for i, (model_name, results) in enumerate(self.results.items()):
-            ax1.scatter(self.y_test, results['y_test_pred'], 
-                       alpha=0.6, label=model_name.replace('_', ' ').title(),
-                       color=colors[(i+1) % len(colors)], s=30)
-        
-        # Perfect prediction line
-        all_predictions = [self.linear_results['y_pred_test']] if hasattr(self, 'linear_results') else []
-        all_predictions.extend([results['y_test_pred'] for results in self.results.values()])
-        
-        min_val = min(self.y_test.min(), min([pred.min() for pred in all_predictions]))
-        max_val = max(self.y_test.max(), max([pred.max() for pred in all_predictions]))
-        ax1.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5, label='Perfect Prediction')
-        
-        ax1.set_xlabel('Actual REVR')
-        ax1.set_ylabel('Predicted REVR')
-        ax1.set_title('Actual vs Predicted (Test Set)')
-        ax1.legend()
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot 2: Residuals
-        ax2 = axes[0, 1]
-        
-        # Add linear regression residuals if available
-        if hasattr(self, 'linear_results'):
-            linear_residuals = self.y_test - self.linear_results['y_pred_test']
-            ax2.scatter(self.linear_results['y_pred_test'], linear_residuals, 
-                       alpha=0.6, label='Linear Regression', color='red', s=50)
-        
-        # Add non-linear model residuals
-        for i, (model_name, results) in enumerate(self.results.items()):
-            residuals = self.y_test - results['y_test_pred']
-            ax2.scatter(results['y_test_pred'], residuals, 
-                       alpha=0.6, label=model_name.replace('_', ' ').title(),
-                       color=colors[(i+1) % len(colors)], s=30)
-        
-        ax2.axhline(y=0, color='k', linestyle='--', alpha=0.5)
-        ax2.set_xlabel('Predicted REVR')
-        ax2.set_ylabel('Residuals')
-        ax2.set_title('Residual Plot')
-        ax2.legend()
-        ax2.grid(True, alpha=0.3)
-        
-        # Plot 3: Model Performance Comparison
-        ax3 = axes[1, 0]
-        
-        # Prepare data for plotting
-        model_names = []
-        test_r2_scores = []
-        cv_scores = []
-        
-        # Add linear regression if available
-        if hasattr(self, 'linear_results'):
-            model_names.append('Linear Regression')
-            test_r2_scores.append(self.linear_results['test_r2'])
-            cv_scores.append(np.nan)  # No CV for linear regression
-        
-        # Add non-linear models
-        for name in self.results.keys():
-            model_names.append(name.replace('_', ' ').title())
-            test_r2_scores.append(self.results[name]['test_r2'])
-            cv_scores.append(self.results[name]['cv_mean'])
-        
-        x = np.arange(len(model_names))
-        width = 0.35
-        
-        # Plot bars
-        bars1 = ax3.bar(x - width/2, test_r2_scores, width, label='Test R²', alpha=0.8)
-        bars2 = ax3.bar(x + width/2, cv_scores, width, label='CV R²', alpha=0.8)
-        
-        # Color linear regression differently
-        if hasattr(self, 'linear_results'):
-            bars1[0].set_color('red')
-            bars2[0].set_color('red')
-        
-        ax3.set_xlabel('Models')
-        ax3.set_ylabel('R² Score')
-        ax3.set_title('Model Performance Comparison')
-        ax3.set_xticks(x)
-        ax3.set_xticklabels(model_names, rotation=45, ha='right')
-        ax3.legend()
-        ax3.grid(True, alpha=0.3)
-        
-        # Plot 4: Feature Importance (Random Forest)
-        ax4 = axes[1, 1]
-        if 'random_forest' in self.models:
-            rf_model = self.models['random_forest']
-            importances = rf_model.feature_importances_
-            indices = np.argsort(importances)[::-1]
-            feature_names = self.X_train.columns.tolist()
-            
-            ax4.bar(range(len(importances)), importances[indices])
-            ax4.set_xlabel('Features')
-            ax4.set_ylabel('Importance')
-            ax4.set_title('Random Forest Feature Importance')
-            ax4.set_xticks(range(len(importances)))
-            ax4.set_xticklabels([feature_names[i] for i in indices], rotation=45, ha='right')
-            ax4.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig('output_files/nonlinear_model_comparison.png', dpi=300, bbox_inches='tight')
-        print("✓ Model comparison plots saved to output_files/nonlinear_model_comparison.png")
-        plt.show()
+        print("\n" + "="*80)
+        print("ANALYSIS COMPLETE")
+        print("="*80)
     
     def print_summary_table(self):
         """
         Print a summary table comparing all models including linear regression.
         """
         print("\n" + "="*80)
-        print("MODEL COMPARISON SUMMARY")
+        print("MODEL COMPARISON SUMMARY (WITH FAMA-FRENCH 5-FACTORS)")
         print("="*80)
         
         # Create summary DataFrame
@@ -715,8 +558,8 @@ class NonlinearModelAnalysis:
         print(summary_df.to_string(index=False))
         
         # Save summary
-        summary_df.to_csv('data_files/nonlinear_model_summary.csv', index=False)
-        print("\n✓ Model summary saved to data_files/nonlinear_model_summary.csv")
+        summary_df.to_csv('data_files/nonlinear_model_summary_with_ff_5factor.csv', index=False)
+        print("\n✓ Model summary saved to data_files/nonlinear_model_summary_with_ff_5factor.csv")
         
         # Print linear vs non-linear comparison
         if hasattr(self, 'linear_results') and self.results:
@@ -734,55 +577,14 @@ class NonlinearModelAnalysis:
                 print(f"  ⚠ Non-linear models provide modest improvement")
             else:
                 print(f"  ⚠ Linear model performs similarly to non-linear models")
-    
-    def run_complete_analysis(self, optimize_hyperparameters=True):
-        """
-        Run complete analysis including linear and non-linear models.
-        
-        Parameters:
-        -----------
-        optimize_hyperparameters : bool
-            Whether to perform hyperparameter optimization
-        """
-        print("="*80)
-        print("COMPREHENSIVE MACHINE LEARNING ANALYSIS")
-        print("="*80)
-        
-        # Train linear regression first (baseline)
-        print("\n" + "="*60)
-        print("LINEAR BASELINE MODEL")
-        print("="*60)
-        self.train_multiple_linear_regression()
-        
-        # Train non-linear models
-        print("\n" + "="*60)
-        print("NON-LINEAR MODELS")
-        print("="*60)
-        self.train_random_forest(optimize_hyperparameters)
-        self.train_xgboost(optimize_hyperparameters)
-        
-        # Analyze feature importance
-        self.analyze_feature_importance()
-        
-        # Create plots
-        self.plot_model_comparison()
-        
-        # Print summary
-        self.print_summary_table()
-        
-        print("\n" + "="*80)
-        print("ANALYSIS COMPLETE")
-        print("="*80)
-
 
 def main():
     """
-    Main function to run the non-linear analysis.
+    Main function to run the non-linear analysis with Fama-French 5 factors.
     """
     # Run analysis with hyperparameter optimization
-    analysis = NonlinearModelAnalysis()
+    analysis = NonlinearModelAnalysisWithFF()
     analysis.run_complete_analysis(optimize_hyperparameters=True)
 
-
 if __name__ == "__main__":
-    main() 
+    main()
