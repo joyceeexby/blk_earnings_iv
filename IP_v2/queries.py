@@ -54,6 +54,28 @@ def build_rdq_query_from_tickers(ticker_list, start_date, end_date):
     """
     return query
 
+def build_rdq_query_from_gvkeys(gvkey_list, start_date, end_date):
+    """
+    Build query to get earnings dates using GVKEYs (for index constituents).
+    """
+    if not gvkey_list:
+        raise ValueError("You must provide at least one GVKEY.")
+    formatted_gvkeys = ', '.join([f"'{gvkey}'" for gvkey in gvkey_list])
+    query = f"""
+    SELECT gvkey, cusip,
+           tic as ticker,
+           datadate,
+           rdq as earnings_date,
+           fyearq,
+           fqtr
+    FROM comp.fundq
+    WHERE gvkey IN ({formatted_gvkeys})
+      AND rdq BETWEEN '{start_date}' AND '{end_date}'
+      AND rdq IS NOT NULL
+    ORDER BY ticker, rdq;
+    """
+    return query
+
 def build_secprd_query(secid_list, start_date, end_date):
     if not secid_list:
         raise ValueError("SECID list is empty.")
@@ -64,5 +86,58 @@ def build_secprd_query(secid_list, start_date, end_date):
     WHERE secid IN ({formatted_secids})
       AND date BETWEEN '{start_date}' AND '{end_date}'
     ORDER BY secid, date;
+    """
+    return query
+
+def build_index_holdings_query(index_name):
+    """
+    Build query to get index constituents.
+    """
+    query = f"""
+    SELECT *
+    FROM comp_na_daily_all.wrds_idx_cst_current t
+    WHERE indexname = '{index_name}'
+    """
+    return query
+
+def build_ibes_summary_query(cusip_list, start_date, end_date):
+    """
+    Build query to get IBES EPS summary estimates.
+    """
+    if not cusip_list:
+        return ""
+    
+    cusip_list_str = ', '.join(f"'{cusip}'" for cusip in cusip_list)
+    
+    query = f"""
+    SELECT ticker, cusip, statpers, fpedats, anndats_act,
+           meanest, stdev, numest, fpi
+    FROM tr_ibes.statsum_epsus
+    WHERE cusip IN ({cusip_list_str})
+      AND statpers BETWEEN '{start_date}' AND '{end_date}'
+      AND measure = 'EPS'
+      AND fiscalp = 'QTR'
+    """
+    return query
+
+def build_security_info_query(cusip_list):
+    """
+    Build query to get latest ticker information for CUSIPs.
+    """
+    if not cusip_list:
+        return ""
+    
+    formatted_cusips = ', '.join(f"'{str(cusip)}'" for cusip in cusip_list)
+    
+    query = f"""
+    SELECT cusip, ticker, secid, effect_date
+    FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (PARTITION BY cusip ORDER BY effect_date DESC) AS rn
+        FROM optionm_all.secnmd
+        WHERE cusip IN ({formatted_cusips})
+    ) sub
+    WHERE rn = 1
+    ORDER BY cusip;
     """
     return query 
