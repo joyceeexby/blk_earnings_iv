@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from .queries import build_optionm_query, build_rdq_query_from_tickers, build_secprd_query
 from .analysis import calculate_option_metrics, apply_data_filters, merge_earnings_options, calculate_eiv, print_options_summary
 from .plotting import plot_volatility_smile, plot_term_structure, plot_event_study_iv
+from .dispersion_analysis import DispersionAnalysis
 import matplotlib.pyplot as plt
 
 class EarningsIVDataPipeline:
@@ -15,6 +16,7 @@ class EarningsIVDataPipeline:
         self.db = db_connection
         self.data = {}
         self.available_tables = None
+        self.dispersion_analyzer = DispersionAnalysis(db_connection)
 
     def setup_optionm_tables(self):
         if self.available_tables is None:
@@ -254,6 +256,39 @@ class EarningsIVDataPipeline:
         print("\n" + "="*70)
         print("ANALYSIS COMPLETE")
         print("="*70)
+
+    def run_dispersion_analysis(self, index_name='S&P 500', start_date='2022-01-01', end_date='2023-01-01'):
+        """
+        Run dispersion analysis to get analyst dispersion data.
+        """
+        print(f"Running dispersion analysis for {index_name}...")
+        try:
+            dispersion_data = self.dispersion_analyzer.run_dispersion_analysis(
+                index_name=index_name,
+                start_date=start_date,
+                end_date=end_date
+            )
+            self.data['dispersion'] = dispersion_data
+            print(f"Retrieved {len(dispersion_data)} dispersion observations")
+            return dispersion_data
+        except Exception as e:
+            print(f"Error in dispersion analysis: {e}")
+            return None
+
+    def merge_dispersion_with_main_data(self):
+        """
+        Merge dispersion data with main earnings/options data.
+        """
+        if 'dispersion' not in self.data:
+            print("No dispersion data available. Run run_dispersion_analysis() first.")
+            return None
+        
+        # This would merge the dispersion data with your main analysis results
+        # Implementation depends on your specific data structure
+        print("Merging dispersion data with main analysis...")
+        # Add your merge logic here
+        
+        return self.data
 
     # Methods to be imported from queries.py, analysis.py, plotting.py
     # e.g. get_securities_info, get_earnings_dates, get_option_data, etc. 
