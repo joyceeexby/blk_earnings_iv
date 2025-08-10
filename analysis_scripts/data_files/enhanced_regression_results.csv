@@ -1,0 +1,2 @@
+model,ievr_coef,ievr_tstat,ievr_pvalue,dispersion_coef,dispersion_tstat,dispersion_pvalue,r_squared,adj_r_squared,nobs
+REVR = α + β₁×IEVR + β₂×Dispersion,0.45331734617248604,9.899774723400476,2.7209410534465474e-22,-0.04501894899903785,-1.6245643442047248,0.10450914634981616,0.07625329776325218,0.07476578294483549,1245.0
