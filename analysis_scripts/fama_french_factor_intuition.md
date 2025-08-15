@@ -175,3 +175,4 @@ These capture how the relationship between implied and realized volatility chang
 - **Regime detection**: Different factor importance in different conditions
 
 This comprehensive factor model should significantly improve REVR prediction by accounting for systematic risk factors that affect earnings volatility across different types of stocks and market conditions.
+
