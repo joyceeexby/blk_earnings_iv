@@ -216,6 +216,29 @@ class FixedRegressionAnalysis:
             sectors = self.data['sector'].dropna().unique()
             for sector in sectors[:-1]:
                 self.data[f'dummy_sector_{sector}'] = (self.data['sector'] == sector).astype(int)
+        
+        # Add options surface features variables if they exist
+        options_features = ['term_ratio', 'skew', 'kurt', 'iv_ratio', 'smirk']
+        for feature in options_features:
+            if feature in self.data.columns:
+                # Log transformation for positive values
+                self.data[f'log_{feature}'] = np.where(
+                    np.isfinite(self.data[feature]) & (self.data[feature] > 0),
+                    np.log(self.data[feature]), np.nan
+                )
+                
+                # Squared term for interaction effects
+                self.data[f'{feature}_squared'] = np.where(
+                    np.isfinite(self.data[feature]),
+                    self.data[feature] ** 2, np.nan
+                )
+                
+                # Interaction with IEVR
+                if 'ievr' in self.data.columns:
+                    self.data[f'ievr_{feature}'] = np.where(
+                        np.isfinite(self.data['ievr']) & np.isfinite(self.data[feature]),
+                        self.data['ievr'] * self.data[feature], np.nan
+                    )
     
     def descriptive_statistics(self):
         """
@@ -236,6 +259,12 @@ class FixedRegressionAnalysis:
         # Add old methodology variables if they exist (for backward compatibility)
         if 'pre_earnings_avg_vol' in self.data.columns:
             base_vars.extend(['pre_earnings_avg_vol', 'post_earnings_avg_vol'])
+        
+        # Add options surface features if they exist
+        options_features = ['term_ratio', 'skew', 'kurt', 'iv_ratio', 'smirk']
+        for feature in options_features:
+            if feature in self.data.columns:
+                base_vars.append(feature)
         
         print(self.data[base_vars].describe())
         
@@ -678,6 +707,60 @@ class FixedRegressionAnalysis:
                 model7 = sm.OLS(error_clean_data['prediction_error'], X7).fit()
                 print(model7.summary())
                 models.append(model7)
+        except Exception as e:
+            print(f"  Error: {e}")
+            models.append(None)
+        
+        # Model 8: REVR on IEVR + Options Surface Features
+        print(f"\nMODEL 8: REVR = α + β₁×IEVR + β₂×Options Surface Features")
+        print(f"{'='*50}")
+        
+        try:
+            # Check for options surface features
+            options_features = ['term_ratio', 'skew', 'kurt', 'iv_ratio', 'smirk']
+            available_features = [f for f in options_features if f in clean_data.columns]
+            
+            if available_features:
+                # Check for finite values in options features
+                feature_finite_mask = np.isfinite(clean_data[available_features]).all(axis=1)
+                feature_clean_data = clean_data[feature_finite_mask].copy()
+                
+                if len(feature_clean_data) < 10:
+                    print("  Error: Insufficient clean options features data for regression")
+                    models.append(None)
+                else:
+                    X8 = sm.add_constant(feature_clean_data[['ievr'] + available_features])
+                    model8 = sm.OLS(feature_clean_data['revr'], X8).fit()
+                    print(model8.summary())
+                    models.append(model8)
+            else:
+                print("  Error: No options surface features available")
+                models.append(None)
+        except Exception as e:
+            print(f"  Error: {e}")
+            models.append(None)
+        
+        # Model 9: REVR on IEVR + IEVR×Options Features (Interaction)
+        print(f"\nMODEL 9: REVR = α + β₁×IEVR + β₂×IEVR×Options Features")
+        print(f"{'='*50}")
+        
+        try:
+            if available_features:
+                # Create interaction terms
+                interaction_terms = [f'ievr_{feature}' for feature in available_features]
+                available_interactions = [term for term in interaction_terms if term in feature_clean_data.columns]
+                
+                if available_interactions:
+                    X9 = sm.add_constant(feature_clean_data[['ievr'] + available_interactions])
+                    model9 = sm.OLS(feature_clean_data['revr'], X9).fit()
+                    print(model9.summary())
+                    models.append(model9)
+                else:
+                    print("  Error: No interaction terms available")
+                    models.append(None)
+            else:
+                print("  Error: No options surface features available for interactions")
+                models.append(None)
         except Exception as e:
             print(f"  Error: {e}")
             models.append(None)

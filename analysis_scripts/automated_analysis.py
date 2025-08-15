@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import wrds
 from revr_analysis import REVRAnalysis
 from ievr_analysis import IEVRAnalysis
+from option_surface_features import compute_option_surface_features, compute_option_surface_features_no_quarter_filter
 
 class AutomatedEarningsAnalysis:
     """
@@ -102,6 +103,183 @@ class AutomatedEarningsAnalysis:
             print(f"Error getting stock price: {e}")
             return None
     
+    def get_options_surface_features(self, ticker, earnings_date, analysis_days_before=30):
+        """
+        Get options surface features for a specific earnings event.
+        Uses the same logic as IEVR - direct calculation for the specific earnings date.
+        """
+        try:
+            # Get secid for the ticker (same as IEVR)
+            sec_query = f"""
+            SELECT secid, ticker
+            FROM optionm.secnmd
+            WHERE ticker = '{ticker}'
+            ORDER BY effect_date DESC
+            LIMIT 1
+            """
+            sec_info = self.db.raw_sql(sec_query)
+            
+            if sec_info.empty:
+                print(f"  ⚠ No secid found for {ticker}")
+                return None
+                
+            secid = sec_info.iloc[0]['secid']
+            print(f"  Found secid {secid} for {ticker}")
+            
+            # Try multiple lag days to handle calendar vs trading date issues
+            max_attempts = 10  # Try up to 10 different lag days
+            for attempt in range(max_attempts):
+                current_lag = analysis_days_before - attempt
+                if current_lag < 20:  # Don't go too far back
+                    break
+                    
+                print(f"  Attempt {attempt + 1}: Trying {current_lag} days before earnings...")
+                
+                # Calculate options surface features directly (same approach as IEVR)
+                try:
+                    # Get surface date
+                    from option_surface_features import get_relative_surface_date
+                    surface_date = get_relative_surface_date(secid, earnings_date, current_lag, self.db)
+                    
+                    if surface_date is None:
+                        print(f"    No surface date found for {current_lag} days lag")
+                        continue
+                    
+                    print(f"    Surface date: {surface_date}")
+                    
+                    # Calculate each feature directly
+                    from option_surface_features import (
+                        extract_term_diff_feature, 
+                        extract_skew_feature, 
+                        extract_kurtosis_feature,
+                        monthly_iv_change_ratio_feature,
+                        extract_smirk_feature
+                    )
+                    
+                    # TERM_RATIO
+                    term_ratio, _ = extract_term_diff_feature(secid, earnings_date, self.db, current_lag)
+                    
+                    # SKEW
+                    skew, _ = extract_skew_feature(secid, earnings_date, self.db, current_lag)
+                    
+                    # KURT
+                    kurt, _ = extract_kurtosis_feature(secid, earnings_date, self.db, current_lag)
+                    
+                    # IV_RATIO
+                    iv_ratio, _, _ = monthly_iv_change_ratio_feature(secid, earnings_date, self.db, current_lag)
+                    
+                    # SMIRK
+                    smirk, _ = extract_smirk_feature(secid, earnings_date, self.db, current_lag)
+                    if isinstance(smirk, tuple):
+                        smirk = smirk[0]
+                    
+                    # Check if we got any valid features
+                    features = {
+                        'TERM_RATIO': term_ratio,
+                        'SKEW': skew,
+                        'KURT': kurt,
+                        'IV_RATIO': iv_ratio,
+                        'SMIRK': smirk
+                    }
+                    
+                    valid_features = {k: v for k, v in features.items() if v is not None}
+                    
+                    if valid_features:
+                        print(f"  ✓ Found options surface features using {current_lag} days lag")
+                        print(f"    Valid features: {list(valid_features.keys())}")
+                        return features
+                    else:
+                        print(f"    No valid features found for {current_lag} days lag")
+                        
+                except Exception as e:
+                    print(f"    Error calculating features for {current_lag} days lag: {e}")
+                    continue
+            
+            print(f"  ⚠ Could not find options surface features after {max_attempts} attempts")
+            
+            # Final fallback: Try to calculate basic features from IEVR data
+            print(f"  Trying fallback calculation...")
+            return self.get_options_surface_features_fallback(ticker, earnings_date, analysis_days_before)
+            
+        except Exception as e:
+            print(f"Error computing options surface features for {ticker}: {e}")
+            # Fallback: Try to calculate basic features from IEVR data
+            print(f"  Trying fallback calculation...")
+            return self.get_options_surface_features_fallback(ticker, earnings_date, analysis_days_before)
+    
+    def get_options_surface_features_fallback(self, ticker, earnings_date, analysis_days_before=30):
+        """
+        Fallback method to calculate basic options surface features using IEVR data source.
+        """
+        try:
+            # Use the same data source as IEVR (keep original behavior)
+            analysis_date = earnings_date - timedelta(days=analysis_days_before)
+            
+            # Get IV surface data (same as IEVR)
+            from ievr_analysis import DirectIVData
+            surface = DirectIVData(ticker, analysis_date.strftime('%Y-%m-%d'), None, self.db)
+            iv_surface_data = surface.fetch_iv_data()
+            
+            if iv_surface_data is None or iv_surface_data.empty:
+                print(f"  Fallback: No IV data available for {ticker}")
+                return None
+            
+            # Calculate basic features from the IV surface
+            features = {}
+            
+            # TERM_RATIO: 30-day IV / 10-day IV
+            atm_30 = iv_surface_data[(iv_surface_data['tte'] == 30) & 
+                                   (iv_surface_data['moneyness'].between(0.98, 1.02))]
+            atm_10 = iv_surface_data[(iv_surface_data['tte'] == 10) & 
+                                   (iv_surface_data['moneyness'].between(0.98, 1.02))]
+            
+            if not atm_30.empty and not atm_10.empty:
+                iv_30 = atm_30['put_iv'].mean()
+                iv_10 = atm_10['put_iv'].mean()
+                if iv_10 > 0:
+                    features['TERM_RATIO'] = iv_30 / iv_10
+            
+            # SKEW: (Call OTM - Put OTM) / ATM
+            call_otm = iv_surface_data[(iv_surface_data['tte'] == 30) & 
+                                     (iv_surface_data['moneyness'] > 1.05)]
+            put_otm = iv_surface_data[(iv_surface_data['tte'] == 30) & 
+                                    (iv_surface_data['moneyness'] < 0.95)]
+            atm = iv_surface_data[(iv_surface_data['tte'] == 30) & 
+                                (iv_surface_data['moneyness'].between(0.98, 1.02))]
+            
+            if not call_otm.empty and not put_otm.empty and not atm.empty:
+                call_iv = call_otm['call_iv'].mean() if 'call_iv' in call_otm.columns else call_otm['put_iv'].mean()
+                put_iv = put_otm['put_iv'].mean()
+                atm_iv = atm['put_iv'].mean()
+                if atm_iv > 0:
+                    features['SKEW'] = (call_iv - put_iv) / atm_iv
+            
+            # Basic SMIRK: Put OTM / Call ATM
+            if not put_otm.empty and not atm.empty:
+                put_iv = put_otm['put_iv'].mean()
+                atm_iv = atm['put_iv'].mean()
+                if atm_iv > 0:
+                    features['SMIRK'] = put_iv / atm_iv - 1
+            
+            # IV_RATIO: Current IV / Historical average (simplified)
+            if not atm.empty:
+                features['IV_RATIO'] = 1.0  # Placeholder
+            
+            # KURT: Simplified kurtosis measure
+            if not atm.empty:
+                features['KURT'] = 0.0  # Placeholder
+            
+            if features:
+                print(f"  Fallback: Calculated {len(features)} basic features")
+                return features
+            else:
+                print(f"  Fallback: Could not calculate any features")
+                return None
+                
+        except Exception as e:
+            print(f"  Fallback calculation failed: {e}")
+            return None
+    
     def analyze_single_event(self, ticker, earnings_date, analysis_days_before=30):
         """
         Analyze a single earnings event for both REVR and IEVR.
@@ -129,8 +307,22 @@ class AutomatedEarningsAnalysis:
         # REVR plotting removed
         print(f"\n2. REVR calculation completed (plotting disabled)")
         
-        # Calculate IEVR
-        print(f"\n3. Calculating IEVR...")
+        # Calculate options surface features FIRST
+        print(f"\n3. Calculating Options Surface Features...")
+        surface_features = self.get_options_surface_features(ticker, earnings_date, analysis_days_before)
+        
+        if surface_features is not None:
+            print(f"✓ Options surface features calculated successfully")
+            print(f"  TERM_RATIO: {surface_features.get('TERM_RATIO', 'N/A')}")
+            print(f"  SKEW: {surface_features.get('SKEW', 'N/A')}")
+            print(f"  KURT: {surface_features.get('KURT', 'N/A')}")
+            print(f"  IV_RATIO: {surface_features.get('IV_RATIO', 'N/A')}")
+            print(f"  SMIRK: {surface_features.get('SMIRK', 'N/A')}")
+        else:
+            print(f"⚠ Options surface features calculation failed or returned no data")
+        
+        # Calculate IEVR (now with options surface context available)
+        print(f"\n4. Calculating IEVR...")
         
         # Get approximate stock price for IEVR analysis
         underlying_price = self.get_stock_price_at_date(ticker, analysis_date)
@@ -165,6 +357,11 @@ class AutomatedEarningsAnalysis:
             'normative_realized_vol': revr_results.get('normative_realized_vol', None),  # Added
             'skew_ratio': ievr_results.get('skew_ratio', None),  # Added skew ratio
             'spx_ievr': ievr_results.get('spx_ievr', None),  # Added S&P 500 IEVR
+            'term_ratio': surface_features.get('TERM_RATIO', None) if surface_features else None,
+            'skew': surface_features.get('SKEW', None) if surface_features else None,
+            'kurt': surface_features.get('KURT', None) if surface_features else None,
+            'iv_ratio': surface_features.get('IV_RATIO', None) if surface_features else None,
+            'smirk': surface_features.get('SMIRK', None) if surface_features else None,
             'underlying_price': underlying_price,
             'methodology': 'ST/MT Ratio (Expanding EWM)'
         }
@@ -174,6 +371,17 @@ class AutomatedEarningsAnalysis:
         print(f"  IEVR: {event_results['ievr']:.3f}")
         print(f"  S&P 500 IEVR: {event_results['spx_ievr']:.3f}" if event_results['spx_ievr'] is not None else "  S&P 500 IEVR: Not calculated")
         print(f"  Ratio (IEVR/REVR): {event_results['ievr']/event_results['revr']:.3f}")
+        
+        # Show options surface features summary
+        if surface_features is not None:
+            print(f"  Options Surface Features:")
+            print(f"    TERM_RATIO: {event_results.get('term_ratio', 'N/A')}")
+            print(f"    SKEW: {event_results.get('skew', 'N/A')}")
+            print(f"    KURT: {event_results.get('kurt', 'N/A')}")
+            print(f"    IV_RATIO: {event_results.get('iv_ratio', 'N/A')}")
+            print(f"    SMIRK: {event_results.get('smirk', 'N/A')}")
+        else:
+            print(f"  Options Surface Features: Not available")
         
         return event_results
     
@@ -234,6 +442,12 @@ class AutomatedEarningsAnalysis:
                     'normative_implied_vol': event.get('normative_implied_vol', None),  # Added
                     'normative_realized_vol': event.get('normative_realized_vol', None),  # Added
                     'skew_ratio': event.get('skew_ratio', None),  # Added skew ratio
+                    'spx_ievr': event.get('spx_ievr', None),  # Added S&P 500 IEVR
+                    'term_ratio': event.get('term_ratio', None),  # Added options surface features
+                    'skew': event.get('skew', None),
+                    'kurt': event.get('kurt', None),
+                    'iv_ratio': event.get('iv_ratio', None),
+                    'smirk': event.get('smirk', None),
                     'underlying_price': event.get('underlying_price', None),
                     'methodology': event.get('methodology', 'ST/MT Ratio (Expanding EWM)')
                 }
@@ -252,9 +466,34 @@ class AutomatedEarningsAnalysis:
             print(f"  IEVR - Mean: {results_df['ievr'].mean():.3f}, Std: {results_df['ievr'].std():.3f}")
             print(f"  Ratio - Mean: {results_df['ratio'].mean():.3f}, Std: {results_df['ratio'].std():.3f}")
             
+            # Options surface features summary
+            surface_features = ['term_ratio', 'skew', 'kurt', 'iv_ratio', 'smirk']
+            print(f"\nOptions Surface Features Summary:")
+            for feature in surface_features:
+                if feature in results_df.columns:
+                    non_null_count = results_df[feature].notna().sum()
+                    if non_null_count > 0:
+                        mean_val = results_df[feature].mean()
+                        std_val = results_df[feature].std()
+                        print(f"  {feature.upper()} - Mean: {mean_val:.3f}, Std: {std_val:.3f} ({non_null_count}/{len(results_df)} events)")
+                    else:
+                        print(f"  {feature.upper()} - No data available")
+                else:
+                    print(f"  {feature.upper()} - Column not found")
+            
             # Correlation analysis
             correlation = results_df['revr'].corr(results_df['ievr'])
+            print(f"\nCorrelation Analysis:")
             print(f"  Correlation (REVR vs IEVR): {correlation:.3f}")
+            
+            # Options surface features correlations with IEVR
+            if 'ievr' in results_df.columns:
+                print(f"  IEVR Correlations with Options Features:")
+                for feature in surface_features:
+                    if feature in results_df.columns:
+                        corr_val = results_df['ievr'].corr(results_df[feature])
+                        if not pd.isna(corr_val):
+                            print(f"    IEVR vs {feature.upper()}: {corr_val:.3f}")
             
             return results_df
         

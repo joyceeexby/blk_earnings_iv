@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import wrds
 from automated_analysis import AutomatedEarningsAnalysis
 from regression_analysis import FixedRegressionAnalysis
+from config import get_wrds_credentials, START_DATE, END_DATE, ANALYSIS_DAYS_BEFORE
 
 
 def get_large_cap_stocks():
@@ -39,9 +40,12 @@ def run_expanded_analysis():
     print("="*80)
 
     try:
+        # Get WRDS credentials interactively
+        wrds_username, wrds_password = get_wrds_credentials()
+        
         # Connect to WRDS
-        db = wrds.Connection(wrds_username="joycexu020113",
-                             password="JoyceXu020205")
+        db = wrds.Connection(wrds_username=wrds_username,
+                             password=wrds_password)
         print("✓ Connected to WRDS")
 
         # Get stock list
@@ -52,9 +56,9 @@ def run_expanded_analysis():
         analyzer = AutomatedEarningsAnalysis(db)
 
         # Analysis parameters - Extended to 2000 for more data per stock
-        start_date = '2015-01-01'
-        end_date = '2024-12-31'
-        analysis_days_before = 30
+        start_date = START_DATE
+        end_date = END_DATE
+        analysis_days_before = ANALYSIS_DAYS_BEFORE
 
         print(f"Analysis period: {start_date} to {end_date}")
         print(f"Analysis window: {analysis_days_before} days before earnings")
