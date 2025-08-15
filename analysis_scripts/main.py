@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Main execution script for Earnings Implied Volatility Analysis
-Expanded to 100+ stocks with year-by-year analysis
+Expanded to top 100 market cap stocks with year-by-year analysis
 """
 
 import pandas as pd
@@ -13,29 +13,116 @@ from automated_analysis import AutomatedEarningsAnalysis
 from regression_analysis import FixedRegressionAnalysis
 
 
+def get_top_market_cap_quarterly(db, start_year, end_year, num_top_stocks=100):
+    """
+    Fetches the top N stocks by market capitalization for the first trading day
+    of each quarter from a given start year to an end year using CRSP monthly data.
+
+    Parameters:
+    - db: WRDS database connection object.
+    - start_year (int): The starting year (e.g., 2005).
+    - end_year (int): The ending year (e.g., 2023).
+    - num_top_stocks (int): The number of top stocks to retrieve for each quarter (default is 100).
+
+    Returns:
+    - pandas.DataFrame: DataFrame containing the top stocks by market cap
+                        for the first trading day of each quarter.
+    """
+    # Construct the start and end date strings
+    start_date = f"{start_year}-01-01"
+    end_date = f"{end_year}-12-31"
+
+    # SQL query to fetch relevant monthly data from CRSP.msf
+    query = f"""
+    SELECT
+        permno,
+        date,
+        prc,
+        shrout,
+        prc * shrout AS mktcap -- Calculate market cap
+    FROM
+        crsp.msf
+    WHERE
+        date >= '{start_date}'
+        AND date <= '{end_date}'
+        AND prc IS NOT NULL -- Ensure price is not null for calculation
+        AND shrout IS NOT NULL -- Ensure shares outstanding is not null for calculation
+    ORDER BY
+        date, mktcap DESC;
+    """
+
+    monthly_market_cap_df = db.raw_sql(query)
+    print(f"Retrieved {len(monthly_market_cap_df)} monthly market cap records")
+
+    # Convert the 'date' column to datetime objects
+    monthly_market_cap_df['date'] = pd.to_datetime(monthly_market_cap_df['date'])
+
+    # Filter for the approximate first trading day of each quarter (month-end of Jan, Apr, Jul, Oct)
+    quarterly_starts_df = monthly_market_cap_df[
+        monthly_market_cap_df['date'].dt.month.isin([1, 4, 7, 10])
+    ].copy()
+
+    print(f"Found {len(quarterly_starts_df)} quarterly start dates")
+
+    # Initialize an empty list to store the top stocks for each quarter
+    top_stocks_quarterly = []
+
+    # Group by date and get the top N for each date
+    for date, group in quarterly_starts_df.groupby('date'):
+        # Sort by market cap in descending order and get the top N
+        top_n_for_date = group.sort_values(by='mktcap', ascending=False).head(num_top_stocks)
+        top_stocks_quarterly.append(top_n_for_date)
+
+    # Concatenate the results from all quarters into a single DataFrame
+    top_by_market_cap_quarterly_df = pd.concat(top_stocks_quarterly, ignore_index=True)
+
+    return top_by_market_cap_quarterly_df
+
+
+def get_top_stocks_for_analysis(db, start_year, end_year, num_top_stocks=100):
+    """
+    Get the top N stocks by market cap for the analysis period.
+    Returns a list of unique stock identifiers that can be used for analysis.
+    """
+    print(f"Fetching top {num_top_stocks} stocks by market cap for {start_year}-{end_year}...")
+    
+    # Get quarterly top stocks
+    quarterly_df = get_top_market_cap_quarterly(db, start_year, end_year, num_top_stocks)
+    
+    # Get unique PERMNOs and convert to tickers
+    unique_permnos = quarterly_df['permno'].unique()
+    print(f"Found {len(unique_permnos)} unique stocks across quarters")
+    
+    # Convert PERMNO to ticker using CRSP names file
+    ticker_query = f"""
+    SELECT DISTINCT permno, ticker
+    FROM crsp.names
+    WHERE permno IN ({','.join(map(str, unique_permnos))})
+    AND ticker IS NOT NULL
+    AND ticker != ''
+    """
+    
+    ticker_df = db.raw_sql(ticker_query)
+    print(f"Successfully mapped {len(ticker_df)} stocks to tickers")
+    
+    # Return list of tickers
+    return ticker_df['ticker'].tolist()
+
+
 def get_large_cap_stocks():
     """
-    Get a comprehensive list of large-cap stocks for analysis across multiple sectors.
+    Legacy function - kept for backward compatibility but now returns top market cap stocks.
     """
-    stocks = [
-        # Technology (15 stocks)
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX', 'ADBE', 'CRM',
-        'INTC', 'AMD', 'QCOM', 'TXN', 'AVGO',
-        
-        # Financial (15 stocks)
-        'JPM', 'BAC', 'WFC', 'GS', 'MS', 'C', 'USB', 'BLK', 'SCHW', 'AXP',
-        'COF', 'PNC', 'TFC', 'KEY', 'RF',
-        
-        # Healthcare (15 stocks)
-        'JNJ', 'PFE', 'UNH', 'ABBV', 'MRK', 'TMO', 'ABT', 'DHR', 'BMY', 'AMGN',
-        'GILD', 'CVS', 'VRTX', 'REGN', 'LLY']
-    return stocks
+    # This function is now deprecated in favor of get_top_stocks_for_analysis
+    # Return a default list for fallback
+    return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']  # Minimal fallback list
+
 
 def run_expanded_analysis():
     """
-    Run expanded analysis on 100+ stocks with year-by-year breakdown.
+    Run expanded analysis on top 100 market cap stocks with year-by-year breakdown.
     """
-    print("EXPANDED EARNINGS VOLATILITY ANALYSIS")
+    print("EXPANDED EARNINGS VOLATILITY ANALYSIS - TOP 100 MARKET CAP STOCKS")
     print("="*80)
 
     try:
@@ -44,17 +131,19 @@ def run_expanded_analysis():
                              password="JoyceXu020205")
         print("✓ Connected to WRDS")
 
-        # Get stock list
-        stocks = get_large_cap_stocks()
-        print(f"✓ Selected {len(stocks)} stocks for analysis")
+        # Analysis parameters
+        start_date = '2015-01-01'
+        end_date = '2024-12-31'
+        start_year = 2015
+        end_year = 2024
+        analysis_days_before = 30
+
+        # Get top market cap stocks dynamically
+        stocks = get_top_stocks_for_analysis(db, start_year, end_year, num_top_stocks=100)
+        print(f"✓ Selected {len(stocks)} top market cap stocks for analysis")
 
         # Initialize analysis
         analyzer = AutomatedEarningsAnalysis(db)
-
-        # Analysis parameters - Extended to 2000 for more data per stock
-        start_date = '2015-01-01'
-        end_date = '2024-12-31'
-        analysis_days_before = 30
 
         print(f"Analysis period: {start_date} to {end_date}")
         print(f"Analysis window: {analysis_days_before} days before earnings")

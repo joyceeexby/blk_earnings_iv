@@ -2,6 +2,7 @@
 """
 Automated REVR and IEVR Analysis for Multiple Earnings Events
 Calculate both measures for all AAPL earnings events and create Events × 2 matrix
+Enhanced with dispersion analysis and Fama-French factors
 """
 
 import pandas as pd
@@ -11,16 +12,21 @@ from datetime import datetime, timedelta
 import wrds
 from revr_analysis import REVRAnalysis
 from ievr_analysis import IEVRAnalysis
+from pandas.tseries.offsets import BDay
+from option_surface_features import OptionSurfaceFeatures
+import traceback
 
 class AutomatedEarningsAnalysis:
     """
     Automated analysis of REVR and IEVR for multiple earnings events.
+    Enhanced with dispersion analysis and Fama-French factors.
     """
     
     def __init__(self, db_connection):
         self.db = db_connection
         self.revr_analyzer = REVRAnalysis(db_connection)
         self.ievr_analyzer = IEVRAnalysis(db_connection)  # Pass the database connection
+        self.option_surface_analyzer = OptionSurfaceFeatures(db_connection)  # Add option surface features
         self.results = []
         
     def get_earnings_dates(self, ticker, start_date, end_date):
@@ -76,7 +82,7 @@ class AutomatedEarningsAnalysis:
             if sec_info.empty:
                 return None
                 
-            secid = sec_info.iloc[0]['secid']
+            secid = sec_info.iloc[0].to_dict()['secid']
             
             # Get stock price around the date
             start_date = target_date - timedelta(days=days_before)
@@ -94,17 +100,304 @@ class AutomatedEarningsAnalysis:
             price_data = self.db.raw_sql(price_query)
             
             if not price_data.empty:
-                return price_data.iloc[0]['close']
+                return price_data.iloc[0].to_dict()['close']
             else:
                 return None
                 
         except Exception as e:
             print(f"Error getting stock price: {e}")
             return None
-    
+
+    def get_analyst_dispersion(self, ticker, earnings_date, lookback_days=21):
+        """
+        Get analyst forecast dispersion for a specific earnings event.
+        Uses IBES summary data to calculate dispersion at T-lookback_days.
+        Adds [DEBUG] logging and stepwise try/except for each block.
+        """
+        print(f"[DEBUG] get_analyst_dispersion called with ticker={ticker}, earnings_date={earnings_date}, lookback_days={lookback_days}")
+        # Step 1: Calculate lookup date
+        try:
+            earnings_date = pd.to_datetime(earnings_date)
+            lookup_date = earnings_date - BDay(lookback_days)
+            print(f"[DEBUG] Calculated lookup_date: {lookup_date}")
+        except Exception as e:
+            print(f"[DEBUG] Error parsing earnings_date or calculating lookup_date: {e}")
+            traceback.print_exc()
+            return None, None
+
+        # Step 2: Query CUSIP
+        try:
+            cusip_query = f"""
+            SELECT DISTINCT cusip
+            FROM comp.fundq
+            WHERE tic = '{ticker}'
+            AND cusip IS NOT NULL
+            LIMIT 1
+            """
+            cusip_result = self.db.raw_sql(cusip_query)
+            print(f"[DEBUG] CUSIP query returned type: {type(cusip_result)}, shape: {getattr(cusip_result, 'shape', 'N/A')}")
+        except Exception as e:
+            print(f"[DEBUG] Error during CUSIP query for ticker {ticker}: {e}")
+            traceback.print_exc()
+            return None, None
+
+        # Step 3: Check CUSIP query result
+        try:
+            if hasattr(cusip_result, 'empty') and cusip_result.empty:
+                print(f"[DEBUG] No CUSIP found for {ticker}")
+                return None, None
+            if len(cusip_result) == 0:
+                print(f"[DEBUG] No CUSIP found for {ticker} (len==0)")
+                return None, None
+            print(f"[DEBUG] CUSIP found: {cusip_result.iloc[0].to_dict()}")
+        except Exception as e:
+            print(f"[DEBUG] Error checking CUSIP query result: {e}")
+            traceback.print_exc()
+            return None, None
+
+        # Step 4: Prepare CUSIP8
+        try:
+            cusip = cusip_result.iloc[0].to_dict()['cusip']
+            cusip8 = cusip[:8] if len(cusip) >= 8 else cusip
+            print(f"[DEBUG] Using CUSIP8: {cusip8}")
+        except Exception as e:
+            print(f"[DEBUG] Error extracting/formatting CUSIP: {e}")
+            traceback.print_exc()
+            return None, None
+
+        # Step 5: Query IBES summary
+        try:
+            # Try different IBES table names - the table structure might be different
+            ibes_tables = [
+                "tr_ibes.statsum_epsus",
+                "ibes.statsum_epsus", 
+                "ibes.statsum",
+                "tr_ibes.statsum"
+            ]
+            
+            ibes_data = None
+            successful_table = None
+            
+            for table_name in ibes_tables:
+                try:
+                    print(f"[DEBUG] Trying table: {table_name}")
+                    test_query = f"SELECT COUNT(*) as count FROM {table_name} LIMIT 1"
+                    test_result = self.db.raw_sql(test_query)
+                    print(f"[DEBUG] Table {table_name} accessible, count: {test_result.iloc[0]['count']}")
+                    
+                    # Now try the actual query
+                    ibes_query = f"""
+                    SELECT ticker, cusip, statpers, meanest, stdev, numest
+                    FROM {table_name}
+                    WHERE cusip LIKE '{cusip8}%'
+                      AND statpers <= '{lookup_date}'
+                      AND meanest IS NOT NULL
+                      AND stdev IS NOT NULL
+                    ORDER BY statpers DESC
+                    LIMIT 1
+                    """
+                    print(f"[DEBUG] Executing IBES query on {table_name}: {ibes_query}")
+                    ibes_data = self.db.raw_sql(ibes_query)
+                    print(f"[DEBUG] Query successful on {table_name}, returned type: {type(ibes_data)}, shape: {getattr(ibes_data, 'shape', 'N/A')}")
+                    successful_table = table_name
+                    break
+                    
+                except Exception as table_error:
+                    print(f"[DEBUG] Table {table_name} failed: {table_error}")
+                    continue
+            
+            if ibes_data is None:
+                print(f"[DEBUG] All IBES tables failed for ticker {ticker}")
+                return None, None
+                
+            print(f"[DEBUG] Successfully used table: {successful_table}")
+            
+        except Exception as e:
+            print(f"[DEBUG] Error during IBES query for ticker {ticker}: {e}")
+            traceback.print_exc()
+            return None, None
+
+        # Step 6: Check IBES query result
+        try:
+            if hasattr(ibes_data, 'empty') and ibes_data.empty:
+                print(f"[DEBUG] No IBES data found for {ticker} at {lookup_date}")
+                return None, None
+            if len(ibes_data) == 0:
+                print(f"[DEBUG] No IBES data found for {ticker} at {lookup_date} (len==0)")
+                return None, None
+            print(f"[DEBUG] IBES data first row: {ibes_data.iloc[0].to_dict()}")
+        except Exception as e:
+            print(f"[DEBUG] Error checking IBES query result: {e}")
+            traceback.print_exc()
+            return None, None
+
+        # Step 7: Extract meanest, stdev, numest
+        try:
+            # Convert to pandas DataFrame if needed
+            if not isinstance(ibes_data, pd.DataFrame):
+                ibes_data = pd.DataFrame(ibes_data)
+            # Try to access first row
+            ibes_row = ibes_data.iloc[0]
+            mean_est = ibes_row['meanest']
+            stdev = ibes_row['stdev']
+            num_analysts = ibes_row['numest']
+            print(f"[DEBUG] Extracted IBES row: meanest={mean_est}, stdev={stdev}, numest={num_analysts}")
+        except Exception as e:
+            print(f"[DEBUG] Error extracting meanest/stdev/numest from IBES data: {e}")
+            print(f"[DEBUG] ibes_data type: {type(ibes_data)}, shape: {getattr(ibes_data, 'shape', 'N/A')}")
+            traceback.print_exc()
+            return None, None
+
+        # Step 8: Convert to numeric and calculate dispersion
+        try:
+            mean_est_num = float(mean_est)
+            stdev_num = float(stdev)
+            num_analysts_int = int(num_analysts)
+            dispersion = stdev_num / abs(mean_est_num) if mean_est_num != 0 else None
+            print(f"[DEBUG] Dispersion for {ticker}: {dispersion} (from {num_analysts_int} analysts)")
+            print(f"[DEBUG] Raw values - Mean: {mean_est_num}, Std: {stdev_num}")
+            return dispersion, num_analysts_int
+        except Exception as e:
+            print(f"[DEBUG] Error converting values to numeric or calculating dispersion: {e}")
+            print(f"[DEBUG] meanest={mean_est} (type: {type(mean_est)}), stdev={stdev} (type: {type(stdev)}), numest={num_analysts} (type: {type(num_analysts)})")
+            traceback.print_exc()
+            return None, None
+
+    def get_fama_french_factors(self, earnings_date, lookback_days=21):
+        """
+        Get Fama-French 5-factor data for the month containing the earnings date.
+        Uses local CSV file for efficiency.
+        
+        Parameters:
+        - earnings_date: Date of earnings announcement
+        - lookback_days: Days before earnings to get factors
+        
+        Returns:
+        - dict: Fama-French factors for the month
+        """
+        try:
+            # Calculate the month for factor lookup
+            earnings_date = pd.to_datetime(earnings_date)
+            factor_date = earnings_date - timedelta(days=lookback_days)
+            factor_month = factor_date.replace(day=1)  # First day of month
+            
+            # Load Fama-French data from local file
+            ff_file = 'data_files/F-F_Research_Data_5_Factors_2x3.csv'
+            
+            try:
+                ff_data = pd.read_csv(ff_file)
+                
+                # Clean column names
+                ff_data.columns = ff_data.columns.str.strip()
+                date_col = ff_data.columns[0]
+                ff_data = ff_data.rename(columns={date_col: 'Date'})
+                
+                # Convert date format (YYYYMM to datetime)
+                ff_data['Date'] = pd.to_datetime(ff_data['Date'], format='%Y%m', errors='coerce')
+                
+                # Filter for the specific month
+                month_data = ff_data[ff_data['Date'] == factor_month]
+                
+                if month_data.empty:
+                    print(f"No Fama-French data found for {factor_month}")
+                    print(f"Available dates: {ff_data['Date'].dt.to_period('M').unique()}")
+                    return None
+                
+                print(f"  Found Fama-French data for {factor_month}")
+                print(f"  Raw factor values: {month_data.iloc[0].to_dict()}")
+                
+                # Get factors (convert from percentage to decimal)
+                factors_dict = month_data.iloc[0].to_dict()
+                factor_dict = {}
+                
+                # Safely convert each factor to numeric and then to decimal
+                for factor_name, factor_value in factors_dict.items():
+                    if factor_name in ['Mkt-RF', 'SMB', 'HML', 'RMW', 'CMA', 'RF']:
+                        try:
+                            # Convert to numeric first, then to decimal
+                            numeric_value = pd.to_numeric(factor_value, errors='coerce')
+                            if pd.notna(numeric_value):
+                                # Convert from percentage to decimal
+                                decimal_value = numeric_value / 100.0
+                                # Map to our column names
+                                if factor_name == 'Mkt-RF':
+                                    factor_dict['mkt_rf'] = decimal_value
+                                else:
+                                    factor_dict[factor_name.lower()] = decimal_value
+                            else:
+                                factor_dict[factor_name.lower() if factor_name != 'Mkt-RF' else 'mkt_rf'] = None
+                        except (ValueError, TypeError):
+                            factor_dict[factor_name.lower() if factor_name != 'Mkt-RF' else 'mkt_rf'] = None
+                
+                # Calculate market return
+                if factor_dict['mkt_rf'] is not None and factor_dict['rf'] is not None:
+                    factor_dict['mkt_return'] = factor_dict['mkt_rf'] + factor_dict['rf']
+                
+                print(f"  Fama-French factors loaded for {factor_month}")
+                return factor_dict
+                
+            except FileNotFoundError:
+                print(f"Fama-French data file not found: {ff_file}")
+                return None
+                
+        except Exception as e:
+            print(f"Error loading Fama-French factors: {e}")
+            return None
+
+    def get_option_surface_features(self, ticker, earnings_date, n_lag=15):
+        """
+        Get option surface features for a specific earnings event.
+        
+        Parameters:
+        - ticker: Stock ticker
+        - earnings_date: Date of earnings announcement
+        - n_lag: Number of trading days before earnings to calculate features
+        
+        Returns:
+        - dict: Option surface features (TERM_RATIO, SKEW, KURT, IV_RATIO, SMIRK)
+        """
+        try:
+            print(f"  Calculating option surface features for {ticker}...")
+            
+            # Get the latest secid for the ticker
+            secid_query = f"""
+            SELECT secid
+            FROM optionm_all.secnmd
+            WHERE ticker = '{ticker}'
+            ORDER BY effect_date DESC
+            LIMIT 1
+            """
+            
+            secid_result = self.db.raw_sql(secid_query)
+            
+            if secid_result.empty:
+                print(f"    ✗ No secid found for {ticker}")
+                return None
+            
+            # Convert to pandas DataFrame if needed
+            if not isinstance(secid_result, pd.DataFrame):
+                secid_result = pd.DataFrame(secid_result)
+            
+            secid = secid_result.iloc[0]['secid']
+            print(f"    Found secid: {secid}")
+            
+            # Calculate all option surface features
+            features = self.option_surface_analyzer.calculate_surface_features(
+                ticker=ticker,
+                secid=secid,
+                earnings_date=earnings_date,
+                n_lag=n_lag
+            )
+            
+            return features
+            
+        except Exception as e:
+            print(f"  Error calculating option surface features for {ticker}: {e}")
+            return None
+
     def analyze_single_event(self, ticker, earnings_date, analysis_days_before=30):
         """
-        Analyze a single earnings event for both REVR and IEVR.
+        Analyze a single earnings event for REVR, IEVR, dispersion, and Fama-French factors.
         """
         print(f"\n{'='*60}")
         print(f"ANALYZING: {ticker} - {earnings_date}")
@@ -150,7 +443,19 @@ class AutomatedEarningsAnalysis:
             print(f"✗ IEVR calculation failed for {earnings_date}")
             return None
         
-        # Combine results (updated for ST/MT methodology)
+        # Get analyst dispersion
+        print(f"\n4. Calculating analyst dispersion...")
+        dispersion, num_analysts = self.get_analyst_dispersion(ticker, earnings_date, lookback_days=21)
+        
+        # Get Fama-French factors
+        print(f"\n5. Loading Fama-French factors...")
+        ff_factors = self.get_fama_french_factors(earnings_date, lookback_days=21)
+        
+        # Get option surface features
+        print(f"\n6. Calculating option surface features...")
+        option_features = self.get_option_surface_features(ticker, earnings_date, n_lag=15)
+        
+        # Combine all results
         event_results = {
             'ticker': ticker,
             'earnings_date': earnings_date,
@@ -161,12 +466,30 @@ class AutomatedEarningsAnalysis:
             'vol_mt': revr_results.get('vol_mt', None),
             'avg_pre': ievr_results.get('avg_pre', None),
             'avg_post': ievr_results.get('avg_post', None),
-            'normative_implied_vol': ievr_results.get('normative_implied_vol', None),  # Added
-            'normative_realized_vol': revr_results.get('normative_realized_vol', None),  # Added
-            'skew_ratio': ievr_results.get('skew_ratio', None),  # Added skew ratio
-            'spx_ievr': ievr_results.get('spx_ievr', None),  # Added S&P 500 IEVR
+            'normative_implied_vol': ievr_results.get('normative_implied_vol', None),
+            'normative_realized_vol': revr_results.get('normative_realized_vol', None),
+            'skew_ratio': ievr_results.get('skew_ratio', None),
+            'spx_ievr': ievr_results.get('spx_ievr', None),
             'underlying_price': underlying_price,
-            'methodology': 'ST/MT Ratio (Expanding EWM)'
+            'methodology': 'ST/MT Ratio (Expanding EWM)',
+            # New features
+            'analyst_dispersion': dispersion,
+            'num_analysts': num_analysts,
+            # Fama-French factors
+            'mkt_rf': ff_factors.get('mkt_rf', None) if ff_factors else None,
+            'smb': ff_factors.get('smb', None) if ff_factors else None,
+            'hml': ff_factors.get('hml', None) if ff_factors else None,
+            'rmw': ff_factors.get('rmw', None) if ff_factors else None,
+            'cma': ff_factors.get('cma', None) if ff_factors else None,
+            'rf': ff_factors.get('rf', None) if ff_factors else None,
+            'mkt_return': ff_factors.get('mkt_return', None) if ff_factors else None,
+            # Option surface features
+            'TERM_RATIO': option_features.get('TERM_RATIO', None) if option_features else None,
+            'SKEW': option_features.get('SKEW', None) if option_features else None,
+            'KURT': option_features.get('KURT', None) if option_features else None,
+            'IV_RATIO': option_features.get('IV_RATIO', None) if option_features else None,
+            'SMIRK': option_features.get('SMIRK', None) if option_features else None,
+            'surface_date': option_features.get('surface_date', None) if option_features else None
         }
         
         print(f"\n✓ Event Analysis Complete:")
@@ -174,6 +497,12 @@ class AutomatedEarningsAnalysis:
         print(f"  IEVR: {event_results['ievr']:.3f}")
         print(f"  S&P 500 IEVR: {event_results['spx_ievr']:.3f}" if event_results['spx_ievr'] is not None else "  S&P 500 IEVR: Not calculated")
         print(f"  Ratio (IEVR/REVR): {event_results['ievr']/event_results['revr']:.3f}")
+        print(f"  Analyst Dispersion: {event_results['analyst_dispersion']:.4f}" if event_results['analyst_dispersion'] is not None else "  Analyst Dispersion: Not calculated")
+        print(f"  Fama-French Factors: {'Loaded' if ff_factors else 'Not loaded'}")
+        print(f"  Option Surface Features: {'Loaded' if option_features else 'Not loaded'}")
+        if option_features:
+            print(f"    TERM_RATIO: {option_features.get('TERM_RATIO', 'N/A')}, SKEW: {option_features.get('SKEW', 'N/A')}")
+            print(f"    KURT: {option_features.get('KURT', 'N/A')}, IV_RATIO: {option_features.get('IV_RATIO', 'N/A')}, SMIRK: {option_features.get('SMIRK', 'N/A')}")
         
         return event_results
     
@@ -220,7 +549,7 @@ class AutomatedEarningsAnalysis:
         print(f"Success rate: {len(successful_events)/len(earnings)*100:.1f}%")
         
         if successful_events:
-            # Create Events × 2 matrix (updated for ST/MT methodology)
+            # Create comprehensive results DataFrame with all features
             results_df = pd.DataFrame([
                 {
                     'earnings_date': event['earnings_date'],
@@ -231,11 +560,29 @@ class AutomatedEarningsAnalysis:
                     'vol_mt': event.get('vol_mt', None),
                     'avg_pre': event.get('avg_pre', None),
                     'avg_post': event.get('avg_post', None),
-                    'normative_implied_vol': event.get('normative_implied_vol', None),  # Added
-                    'normative_realized_vol': event.get('normative_realized_vol', None),  # Added
-                    'skew_ratio': event.get('skew_ratio', None),  # Added skew ratio
+                    'normative_implied_vol': event.get('normative_implied_vol', None),
+                    'normative_realized_vol': event.get('normative_realized_vol', None),
+                    'skew_ratio': event.get('skew_ratio', None),
                     'underlying_price': event.get('underlying_price', None),
-                    'methodology': event.get('methodology', 'ST/MT Ratio (Expanding EWM)')
+                    'methodology': event.get('methodology', 'ST/MT Ratio (Expanding EWM)'),
+                    # New features
+                    'analyst_dispersion': event.get('analyst_dispersion', None),
+                    'num_analysts': event.get('num_analysts', None),
+                    # Fama-French factors
+                    'mkt_rf': event.get('mkt_rf', None),
+                    'smb': event.get('smb', None),
+                    'hml': event.get('hml', None),
+                    'rmw': event.get('rmw', None),
+                    'cma': event.get('cma', None),
+                    'rf': event.get('rf', None),
+                    'mkt_return': event.get('mkt_return', None),
+                    # Option surface features
+                    'TERM_RATIO': event.get('TERM_RATIO', None),
+                    'SKEW': event.get('SKEW', None),
+                    'KURT': event.get('KURT', None),
+                    'IV_RATIO': event.get('IV_RATIO', None),
+                    'SMIRK': event.get('SMIRK', None),
+                    'surface_date': event.get('surface_date', None)
                 }
                 for event in successful_events
             ])
@@ -252,9 +599,44 @@ class AutomatedEarningsAnalysis:
             print(f"  IEVR - Mean: {results_df['ievr'].mean():.3f}, Std: {results_df['ievr'].std():.3f}")
             print(f"  Ratio - Mean: {results_df['ratio'].mean():.3f}, Std: {results_df['ratio'].std():.3f}")
             
+            # New features summary
+            if 'analyst_dispersion' in results_df.columns:
+                disp_data = results_df['analyst_dispersion'].dropna()
+                if len(disp_data) > 0:
+                    print(f"  Analyst Dispersion - Mean: {disp_data.mean():.4f}, Std: {disp_data.std():.4f}")
+                    print(f"  Coverage: {len(disp_data)}/{len(results_df)} events ({len(disp_data)/len(results_df)*100:.1f}%)")
+            
+            if 'mkt_rf' in results_df.columns:
+                ff_coverage = results_df[['mkt_rf', 'smb', 'hml', 'rmw', 'cma', 'rf']].notna().all(axis=1).sum()
+                print(f"  Fama-French Factors - Coverage: {ff_coverage}/{len(results_df)} events ({ff_coverage/len(results_df)*100:.1f}%)")
+            
+            # Option surface features summary
+            if 'TERM_RATIO' in results_df.columns:
+                surface_features = ['TERM_RATIO', 'SKEW', 'KURT', 'IV_RATIO', 'SMIRK']
+                surface_coverage = results_df[surface_features].notna().all(axis=1).sum()
+                print(f"  Option Surface Features - Coverage: {surface_coverage}/{len(results_df)} events ({surface_coverage/len(results_df)*100:.1f}%)")
+                
+                # Show individual feature coverage
+                for feature in surface_features:
+                    feature_coverage = results_df[feature].notna().sum()
+                    print(f"    {feature}: {feature_coverage}/{len(results_df)} ({feature_coverage/len(results_df)*100:.1f}%)")
+            
             # Correlation analysis
             correlation = results_df['revr'].corr(results_df['ievr'])
             print(f"  Correlation (REVR vs IEVR): {correlation:.3f}")
+            
+            # New correlation analysis
+            if 'analyst_dispersion' in results_df.columns:
+                disp_corr = results_df['revr'].corr(results_df['analyst_dispersion'])
+                print(f"  Correlation (REVR vs Analyst Dispersion): {disp_corr:.3f}" if not np.isnan(disp_corr) else "  Correlation (REVR vs Analyst Dispersion): Not available")
+            
+            # Option surface features correlation analysis
+            if 'TERM_RATIO' in results_df.columns:
+                print(f"\n  Option Surface Features Correlations:")
+                for feature in ['TERM_RATIO', 'SKEW', 'KURT', 'IV_RATIO', 'SMIRK']:
+                    if feature in results_df.columns:
+                        feature_corr = results_df['revr'].corr(results_df[feature])
+                        print(f"    REVR vs {feature}: {feature_corr:.3f}" if not np.isnan(feature_corr) else f"    REVR vs {feature}: Not available")
             
             return results_df
         
