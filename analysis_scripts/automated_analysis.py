@@ -234,6 +234,7 @@ class AutomatedEarningsAnalysis:
                     'normative_implied_vol': event.get('normative_implied_vol', None),  # Added
                     'normative_realized_vol': event.get('normative_realized_vol', None),  # Added
                     'skew_ratio': event.get('skew_ratio', None),  # Added skew ratio
+                    'dispersion': event.get('dispersion', None),  # Added dispersion coefficient
                     'underlying_price': event.get('underlying_price', None),
                     'methodology': event.get('methodology', 'ST/MT Ratio (Expanding EWM)')
                 }
