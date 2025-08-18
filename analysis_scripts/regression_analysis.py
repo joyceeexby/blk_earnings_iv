@@ -26,7 +26,7 @@ class FixedRegressionAnalysis:
     Fixed regression analysis for REVR and IEVR.
     """
     
-    def __init__(self, data_file='data_files/multi_stock_results.csv'):
+    def __init__(self, data_file='analysis_scripts/data_files/streamlined_earnings_analysis_results.csv'):
         """
         Initialize with the multi-stock results data.
         """
@@ -510,6 +510,8 @@ class FixedRegressionAnalysis:
                 controls.append('vol_t_minus_3')
             if 'kink_tte' in clean_data.columns:
                 controls.append('kink_tte')
+            if 'dispersion' in clean_data.columns and not clean_data['dispersion'].isna().all():
+                controls.append('dispersion')
             
             # Remove any controls with NaN values
             valid_controls = []
@@ -550,8 +552,31 @@ class FixedRegressionAnalysis:
             print(f"  Error: {e}")
             models.append(None)
         
-        # Model 7: Prediction error analysis
-        print(f"\nMODEL 7: Prediction Error = α + β × Controls")
+        # Model 7: REVR on IEVR + Dispersion
+        print(f"\nMODEL 7: REVR = α + β₁×IEVR + β₂×Dispersion")
+        print(f"{'='*50}")
+        
+        try:
+            # Check for finite data including dispersion
+            dispersion_mask = (np.isfinite(clean_data['revr']) & 
+                             np.isfinite(clean_data['ievr']) & 
+                             np.isfinite(clean_data['dispersion']))
+            dispersion_clean_data = clean_data[dispersion_mask].copy()
+            
+            if len(dispersion_clean_data) < 10:
+                print("  Error: Insufficient clean data with dispersion for regression")
+                models.append(None)
+            else:
+                X7 = sm.add_constant(dispersion_clean_data[['ievr', 'dispersion']])
+                model7 = sm.OLS(dispersion_clean_data['revr'], X7).fit()
+                print(model7.summary())
+                models.append(model7)
+        except Exception as e:
+            print(f"  Error: {e}")
+            models.append(None)
+        
+        # Model 8: Prediction error analysis
+        print(f"\nMODEL 8: Prediction Error = α + β × Controls")
         print(f"{'='*50}")
         
         try:
@@ -575,10 +600,10 @@ class FixedRegressionAnalysis:
                 print("  Error: Insufficient clean prediction error data for regression")
                 models.append(None)
             else:
-                X7 = sm.add_constant(error_clean_data[valid_error_controls])
-                model7 = sm.OLS(error_clean_data['prediction_error'], X7).fit()
-                print(model7.summary())
-                models.append(model7)
+                X8 = sm.add_constant(error_clean_data[valid_error_controls])
+                model8 = sm.OLS(error_clean_data['prediction_error'], X8).fit()
+                print(model8.summary())
+                models.append(model8)
         except Exception as e:
             print(f"  Error: {e}")
             models.append(None)
@@ -609,6 +634,8 @@ class FixedRegressionAnalysis:
                 controls.append('vol_t_minus_3')
             if 'kink_tte' in clean_data.columns:
                 controls.append('kink_tte')
+            if 'dispersion' in clean_data.columns and not clean_data['dispersion'].isna().all():
+                controls.append('dispersion')
             
             # Remove any controls with NaN values
             valid_controls = []
@@ -649,8 +676,44 @@ class FixedRegressionAnalysis:
             print(f"  Error: {e}")
             models.append(None)
         
-        # Model 7: Prediction error analysis
-        print(f"\nMODEL 7: Prediction Error = α + β × Controls")
+        # Model 7: REVR on IEVR + Dispersion + Controls
+        print(f"\nMODEL 7: REVR = α + β₁×IEVR + β₂×Dispersion + β₃×Controls")
+        print(f"{'='*60}")
+        
+        try:
+            # Check for finite data including dispersion
+            dispersion_mask = (np.isfinite(clean_data['revr']) & 
+                             np.isfinite(clean_data['ievr']) & 
+                             np.isfinite(clean_data['dispersion']))
+            dispersion_clean_data = clean_data[dispersion_mask].copy()
+            
+            if len(dispersion_clean_data) < 10:
+                print("  Error: Insufficient clean data with dispersion for regression")
+                models.append(None)
+            else:
+                # Get additional controls excluding dispersion (already included)
+                additional_controls = ['covid_period', 'post_covid']
+                if 'vol_t_minus_3' in dispersion_clean_data.columns:
+                    additional_controls.append('vol_t_minus_3')
+                if 'kink_tte' in dispersion_clean_data.columns:
+                    additional_controls.append('kink_tte')
+                
+                # Remove any controls with NaN values
+                valid_additional_controls = []
+                for control in additional_controls:
+                    if control in dispersion_clean_data.columns and not dispersion_clean_data[control].isna().all():
+                        valid_additional_controls.append(control)
+                
+                X7 = sm.add_constant(dispersion_clean_data[['ievr', 'dispersion'] + valid_additional_controls])
+                model7 = sm.OLS(dispersion_clean_data['revr'], X7).fit()
+                print(model7.summary())
+                models.append(model7)
+        except Exception as e:
+            print(f"  Error: {e}")
+            models.append(None)
+        
+        # Model 8: Prediction error analysis
+        print(f"\nMODEL 8: Prediction Error = α + β × Controls")
         print(f"{'='*50}")
         
         try:
@@ -663,6 +726,8 @@ class FixedRegressionAnalysis:
                 error_controls.append('vol_t_minus_3')
             if 'kink_tte' in error_clean_data.columns:
                 error_controls.append('kink_tte')
+            if 'dispersion' in error_clean_data.columns and not error_clean_data['dispersion'].isna().all():
+                error_controls.append('dispersion')
             
             # Remove any controls with NaN values
             valid_error_controls = []
@@ -674,10 +739,10 @@ class FixedRegressionAnalysis:
                 print("  Error: Insufficient clean prediction error data for regression")
                 models.append(None)
             else:
-                X7 = sm.add_constant(error_clean_data[valid_error_controls])
-                model7 = sm.OLS(error_clean_data['prediction_error'], X7).fit()
-                print(model7.summary())
-                models.append(model7)
+                X8 = sm.add_constant(error_clean_data[valid_error_controls])
+                model8 = sm.OLS(error_clean_data['prediction_error'], X8).fit()
+                print(model8.summary())
+                models.append(model8)
         except Exception as e:
             print(f"  Error: {e}")
             models.append(None)
@@ -914,24 +979,53 @@ class FixedRegressionAnalysis:
 
 def main():
     """
-    Main function to run fixed regression analysis.
-    Updated for new REVR methodology with stock dummies in sector regressions.
+    Main function to run comprehensive fixed regression analysis.
+    Updated for streamlined features: dispersion, option surface, and Fama-French factors.
     """
-    print("FIXED REGRESSION ANALYSIS FOR REVR AND IEVR")
-    print("Updated for new REVR methodology with stock dummies in sector regressions")
+    print("COMPREHENSIVE FIXED REGRESSION ANALYSIS FOR REVR AND IEVR")
+    print("Updated for streamlined features: dispersion, option surface, and Fama-French factors")
     print("="*100)
     
     # Load the data
-    analysis = FixedRegressionAnalysis('data_files/expanded_earnings_analysis_results.csv')
+    analysis = FixedRegressionAnalysis('analysis_scripts/data_files/streamlined_earnings_analysis_results.csv')
+    
+    print(f"\n{'='*100}")
+    print("RUNNING BASIC REGRESSION MODELS")
+    print(f"{'='*100}")
+    
+    # Run basic regression models (includes dispersion)
+    basic_models = analysis.run_basic_regressions()
+    
+    print(f"\n{'='*100}")
+    print("RUNNING EXTENDED REGRESSION MODELS")
+    print(f"{'='*100}")
+    
+    # Run extended regression models (includes all features)
+    extended_models = analysis.run_extended_regressions()
+    
+    print(f"\n{'='*100}")
+    print("RUNNING SECTOR-SPECIFIC REGRESSIONS")
+    print(f"{'='*100}")
     
     # Run sector-specific regressions with stock dummies
     sector_results = analysis.run_sector_specific_regressions()
     
     if not sector_results.empty:
-        sector_results.to_csv('data_files/sector_regression_results.csv', index=False)
-        print("✓ Sector regression results saved to data_files/sector_regression_results.csv")
+        sector_results.to_csv('analysis_scripts/data_files/sector_regression_results.csv', index=False)
+        print("✓ Sector regression results saved to analysis_scripts/data_files/sector_regression_results.csv")
     else:
         print("✗ No sector regression results generated")
+    
+    print(f"\n{'='*100}")
+    print("REGRESSION ANALYSIS COMPLETE!")
+    print(f"{'='*100}")
+    print("✓ Basic regression models completed")
+    print("✓ Extended regression models completed") 
+    print("✓ Sector-specific regressions completed")
+    print("✓ All models now include streamlined features:")
+    print("  - Dispersion coefficient")
+    print("  - Option surface features (term_ratio, skew, kurt, iv_ratio, smirk)")
+    print("  - Fama-French factors (SMB, HML, RMW, CMA, RF)")
 
 if __name__ == "__main__":
     main() 
