@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import wrds
 from automated_analysis import AutomatedEarningsAnalysis
 from regression_analysis import FixedRegressionAnalysis
+from scipy import stats
 
 
 def get_large_cap_stocks():
@@ -18,18 +19,189 @@ def get_large_cap_stocks():
     Get a comprehensive list of large-cap stocks for analysis across multiple sectors.
     """
     stocks = [
-        # Technology (15 stocks)
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX', 'ADBE', 'CRM',
-        'INTC', 'AMD', 'QCOM', 'TXN', 'AVGO',
+        # Technology (20 stocks)
+        'AAPL', 'MSFT', 'GOOGL', 'GOOG', 'AMZN', 'TSLA', 'NVDA', 'META', 'NFLX', 'ADBE',
+        'CRM', 'ORCL', 'INTC', 'AMD', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'KLAC',
         
-        # Financial (15 stocks)
-        'JPM', 'BAC', 'WFC', 'GS', 'MS', 'C', 'USB', 'BLK', 'SCHW', 'AXP',
-        'COF', 'PNC', 'TFC', 'KEY', 'RF',
+        # Financial Services (15 stocks)
+        'JPM', 'BAC', 'WFC', 'GS', 'MS', 'C', 'USB', 'PNC', 'TFC', 'COF',
+        'AXP', 'BLK', 'SCHW', 'CME', 'ICE',
         
         # Healthcare (15 stocks)
         'JNJ', 'PFE', 'UNH', 'ABBV', 'MRK', 'TMO', 'ABT', 'DHR', 'BMY', 'AMGN',
-        'GILD', 'CVS', 'VRTX', 'REGN', 'LLY']
+        'GILD', 'CVS', 'CI', 'ANTM', 'HUM',
+        
+        # Consumer Discretionary (15 stocks)
+        'HD', 'MCD', 'NKE', 'SBUX', 'LOW', 'TJX', 'BKNG', 'MAR', 'YUM', 'CMG',
+        'TGT', 'COST', 'WMT', 'PM', 'MO',
+        
+        # Consumer Staples (10 stocks)
+        'PG', 'KO', 'PEP', 'EL', 'CL', 'GIS', 'KMB', 'HSY', 'SJM', 'CPB',
+        
+        # Energy (10 stocks)
+        'XOM', 'CVX', 'COP', 'EOG', 'SLB', 'PSX', 'VLO', 'MPC', 'OXY', 'HAL',
+        
+        # Industrials (10 stocks)
+        'BA', 'CAT', 'MMM', 'GE', 'HON', 'UPS', 'FDX', 'RTX', 'LMT', 'NOC',
+        
+        # Materials (5 stocks)
+        'LIN', 'APD', 'FCX', 'NEM', 'AA',
+        
+        # Communication Services (5 stocks)
+        'DIS', 'CMCSA', 'VZ', 'T', 'TMUS',
+        
+        # Real Estate (5 stocks)
+        'AMT', 'PLD', 'CCI', 'EQIX', 'DLR'
+    ]
     return stocks
+
+def calculate_rolling_betas(db, ticker, earnings_date, analysis_days_before=30, beta_window=60):
+    """
+    Calculate rolling betas for market, SMB, and HML factors.
+    
+    Parameters:
+    -----------
+    db : wrds.Connection
+        WRDS database connection
+    ticker : str
+        Stock ticker symbol
+    earnings_date : datetime
+        Earnings announcement date
+    analysis_days_before : int
+        Days before earnings to end beta calculation (default: 30)
+    beta_window : int
+        Rolling window for beta calculation (default: 60 days)
+    
+    Returns:
+    --------
+    dict : Dictionary with beta values for market, SMB, and HML
+    """
+    try:
+        # Calculate date range for beta calculation
+        end_date = earnings_date - timedelta(days=analysis_days_before)
+        start_date = end_date - timedelta(days=beta_window)
+        
+        # Get stock returns from CRSP
+        stock_query = f"""
+        SELECT date, ret
+        FROM crsp.dsf
+        WHERE permno IN (
+            SELECT permno 
+            FROM crsp.dsenames 
+            WHERE ticker = '{ticker}'
+            AND date BETWEEN '{start_date.strftime('%Y-%m-%d')}' AND '{end_date.strftime('%Y-%m-%d')}'
+        )
+        AND date BETWEEN '{start_date.strftime('%Y-%m-%d')}' AND '{end_date.strftime('%Y-%m-%d')}'
+        ORDER BY date
+        """
+        
+        stock_returns = db.raw_sql(stock_query)
+        
+        if stock_returns.empty:
+            return {'beta_market': np.nan, 'beta_smb': np.nan, 'beta_hml': np.nan}
+        
+        # Get factor returns from French data library
+        factor_query = f"""
+        SELECT date, mktrf, smb, hml
+        FROM ff.factors_daily
+        WHERE date BETWEEN '{start_date.strftime('%Y-%m-%d')}' AND '{end_date.strftime('%Y-%m-%d')}'
+        ORDER BY date
+        """
+        
+        factor_returns = db.raw_sql(factor_query)
+        
+        if factor_returns.empty:
+            return {'beta_market': np.nan, 'beta_smb': np.nan, 'beta_hml': np.nan}
+        
+        # Merge stock and factor returns
+        merged_data = pd.merge(stock_returns, factor_returns, on='date', how='inner')
+        
+        if len(merged_data) < 30:  # Need at least 30 observations for reliable beta
+            return {'beta_market': np.nan, 'beta_smb': np.nan, 'beta_hml': np.nan}
+        
+        # Calculate betas using OLS regression
+        betas = {}
+        
+        # Market beta (excess returns)
+        if 'mktrf' in merged_data.columns:
+            slope, intercept, r_value, p_value, std_err = stats.linregress(
+                merged_data['mktrf'], merged_data['ret']
+            )
+            betas['beta_market'] = slope
+        
+        # SMB beta
+        if 'smb' in merged_data.columns:
+            slope, intercept, r_value, p_value, std_err = stats.linregress(
+                merged_data['smb'], merged_data['ret']
+            )
+            betas['beta_smb'] = slope
+        
+        # HML beta
+        if 'hml' in merged_data.columns:
+            slope, intercept, r_value, p_value, std_err = stats.linregress(
+                merged_data['hml'], merged_data['ret']
+            )
+            betas['beta_hml'] = slope
+        
+        return betas
+        
+    except Exception as e:
+        print(f"Error calculating betas for {ticker}: {e}")
+        return {'beta_market': np.nan, 'beta_smb': np.nan, 'beta_hml': np.nan}
+
+def add_beta_features(db, results_df):
+    """
+    Add rolling beta features to the results dataframe.
+    
+    Parameters:
+    -----------
+    db : wrds.Connection
+        WRDS database connection
+    results_df : pd.DataFrame
+        DataFrame with earnings analysis results
+    
+    Returns:
+    --------
+    pd.DataFrame : DataFrame with added beta features
+    """
+    print("Adding rolling beta features...")
+    
+    # Initialize beta columns
+    results_df['beta_market'] = np.nan
+    results_df['beta_smb'] = np.nan
+    results_df['beta_hml'] = np.nan
+    
+    total_events = len(results_df)
+    successful_betas = 0
+    
+    for idx, row in results_df.iterrows():
+        ticker = row['ticker']
+        earnings_date = pd.to_datetime(row['earnings_date'])
+        
+        # Calculate betas for this event
+        betas = calculate_rolling_betas(db, ticker, earnings_date)
+        
+        # Store beta values
+        results_df.loc[idx, 'beta_market'] = betas.get('beta_market', np.nan)
+        results_df.loc[idx, 'beta_smb'] = betas.get('beta_smb', np.nan)
+        results_df.loc[idx, 'beta_hml'] = betas.get('beta_hml', np.nan)
+        
+        if not np.isnan(betas.get('beta_market', np.nan)):
+            successful_betas += 1
+        
+        # Progress update every 50 events
+        if (idx + 1) % 50 == 0:
+            print(f"  Processed {idx + 1}/{total_events} events ({successful_betas} successful betas)")
+    
+    print(f"✓ Beta calculation complete: {successful_betas}/{total_events} events have valid betas")
+    
+    # Print beta statistics
+    print(f"Beta Statistics:")
+    print(f"  Market Beta - Mean: {results_df['beta_market'].mean():.3f}, Std: {results_df['beta_market'].std():.3f}")
+    print(f"  SMB Beta - Mean: {results_df['beta_smb'].mean():.3f}, Std: {results_df['beta_smb'].std():.3f}")
+    print(f"  HML Beta - Mean: {results_df['beta_hml'].mean():.3f}, Std: {results_df['beta_hml'].std():.3f}")
+    
+    return results_df
 
 def run_expanded_analysis():
     """
@@ -40,8 +212,8 @@ def run_expanded_analysis():
 
     try:
         # Connect to WRDS
-        db = wrds.Connection(wrds_username="joycexu020113",
-                             password="JoyceXu020205")
+        db = wrds.Connection(wrds_username="",
+                             password="")
         print("✓ Connected to WRDS")
 
         # Get stock list
@@ -51,8 +223,8 @@ def run_expanded_analysis():
         # Initialize analysis
         analyzer = AutomatedEarningsAnalysis(db)
 
-        # Analysis parameters - Extended to 2000 for more data per stock
-        start_date = '2015-01-01'
+        # Analysis parameters - Extended to 2005 for more data per stock
+        start_date = '2005-01-01'
         end_date = '2024-12-31'
         analysis_days_before = 30
 
@@ -98,7 +270,19 @@ def run_expanded_analysis():
             print(f"Stocks with data: {combined_results['ticker'].nunique()}")
             print(f"Date range: {combined_results['earnings_date'].min()} to {combined_results['earnings_date'].max()}")
 
-            # Save results
+            # Add rolling beta features
+            print(f"\n{'='*80}")
+            print(f"ADDING ROLLING BETA FEATURES")
+            print(f"{'='*80}")
+            
+            try:
+                combined_results = add_beta_features(db, combined_results)
+                print(f"✓ Beta features added successfully")
+            except Exception as e:
+                print(f"✗ Error adding beta features: {e}")
+                print("Continuing with analysis without beta features...")
+            
+            # Save results with beta features
             combined_results.to_csv('data_files/expanded_earnings_analysis_results.csv', index=False)
             print(f"✓ Results saved to data_files/expanded_earnings_analysis_results.csv")
 
