@@ -257,7 +257,12 @@ def get_top_stocks_for_analysis(db, start_year, end_year, num_top_stocks=100):
 def get_large_cap_stocks():
     """
     Legacy function - kept for backward compatibility but now returns top market cap stocks.
+    Legacy function - kept for backward compatibility but now returns top market cap stocks.
     """
+    # This function is now deprecated in favor of get_top_stocks_for_analysis
+    # Return a default list for fallback
+    return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']  # Minimal fallback list
+
     # This function is now deprecated in favor of get_top_stocks_for_analysis
     # Return a default list for fallback
     return ['AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']  # Minimal fallback list
@@ -266,12 +271,16 @@ def get_large_cap_stocks():
 def run_expanded_analysis():
     """
     Run expanded analysis on top 100 market cap stocks with year-by-year breakdown.
+    Run expanded analysis on top 100 market cap stocks with year-by-year breakdown.
     """
+    print("EXPANDED EARNINGS VOLATILITY ANALYSIS - TOP 100 MARKET CAP STOCKS")
     print("EXPANDED EARNINGS VOLATILITY ANALYSIS - TOP 100 MARKET CAP STOCKS")
     print("="*80)
 
     try:
         # Connect to WRDS
+        db = wrds.Connection(wrds_username="joycexu020113",
+                             password="JoyceXu020205")
         db = wrds.Connection(wrds_username="joycexu020113",
                              password="JoyceXu020205")
         print("✓ Connected to WRDS")

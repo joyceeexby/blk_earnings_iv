@@ -116,6 +116,26 @@ class NonlinearModelAnalysis:
         
         print(f"Training set: {len(self.X_train)} observations")
         print(f"Test set: {len(self.X_test)} observations")
+        
+        # Add training/test period information if earnings_date column exists
+        if 'earnings_date' in self.data.columns:
+            # Get the original indices to map back to the data
+            train_indices = self.X_train.index
+            test_indices = self.X_test.index
+            
+            # Get date ranges
+            train_dates = self.data.loc[train_indices, 'earnings_date']
+            test_dates = self.data.loc[test_indices, 'earnings_date']
+            
+            print(f"Training period: {train_dates.min()} to {train_dates.max()}")
+            print(f"Test period: {test_dates.min()} to {test_dates.max()}")
+            
+            # Show number of unique stocks in each set
+            if 'ticker' in self.data.columns:
+                train_tickers = self.data.loc[train_indices, 'ticker'].nunique()
+                test_tickers = self.data.loc[test_indices, 'ticker'].nunique()
+                print(f"Training stocks: {train_tickers} unique tickers")
+                print(f"Test stocks: {test_tickers} unique tickers")
     
     def create_features(self):
         """
@@ -259,6 +279,93 @@ class NonlinearModelAnalysis:
                 print(f"  ✓ Skew ratio shows meaningful correlation with REVR")
             else:
                 print(f"  ⚠ Skew ratio shows weak correlation with REVR")
+    
+    def train_multiple_linear_regression(self):
+        """
+        Train Multiple Linear Regression model using the same features as other models.
+        This provides a linear baseline for comparison with nonlinear models.
+        """
+        print("\n" + "="*60)
+        print("TRAINING MULTIPLE LINEAR REGRESSION MODEL")
+        print("="*60)
+        
+        try:
+            # Import statsmodels for detailed regression analysis
+            import statsmodels.api as sm
+            
+            # Prepare data for statsmodels (add constant)
+            X_train_with_constant = sm.add_constant(self.X_train)
+            X_test_with_constant = sm.add_constant(self.X_test)
+            
+            # Fit the model
+            model = sm.OLS(self.y_train, X_train_with_constant).fit()
+            
+            # Store the model
+            self.linear_model = model
+            
+            # Print detailed summary
+            print("\nMultiple Linear Regression Results:")
+            print("="*50)
+            print(model.summary())
+            
+            # Make predictions
+            y_pred_train = model.predict(X_train_with_constant)
+            y_pred_test = model.predict(X_test_with_constant)
+            
+            # Calculate metrics
+            from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+            
+            train_r2 = r2_score(self.y_train, y_pred_train)
+            test_r2 = r2_score(self.y_test, y_pred_test)
+            train_rmse = np.sqrt(mean_squared_error(self.y_train, y_pred_train))
+            test_rmse = np.sqrt(mean_squared_error(self.y_test, y_pred_test))
+            train_mae = mean_absolute_error(self.y_train, y_pred_train)
+            test_mae = mean_absolute_error(self.y_test, y_pred_test)
+            
+            # Store results
+            self.linear_results = {
+                'model': model,
+                'train_r2': train_r2,
+                'test_r2': test_r2,
+                'train_rmse': train_rmse,
+                'test_rmse': test_rmse,
+                'train_mae': train_mae,
+                'test_mae': test_mae,
+                'y_pred_train': y_pred_train,
+                'y_pred_test': y_pred_test
+            }
+            
+            # Print performance metrics
+            print(f"\nModel Performance:")
+            print(f"  Training R²: {train_r2:.4f}")
+            print(f"  Test R²: {test_r2:.4f}")
+            print(f"  Training RMSE: {train_rmse:.4f}")
+            print(f"  Test RMSE: {test_rmse:.4f}")
+            print(f"  Training MAE: {train_mae:.4f}")
+            print(f"  Test MAE: {test_mae:.4f}")
+            
+            # Print coefficient interpretation
+            print(f"\nCoefficient Interpretation:")
+            print(f"  Intercept: {model.params['const']:.4f}")
+            for feature in self.X_train.columns:
+                if feature in model.params.index:
+                    coef = model.params[feature]
+                    pval = model.pvalues[feature]
+                    tstat = model.tvalues[feature]
+                    significance = "***" if pval < 0.001 else "**" if pval < 0.01 else "*" if pval < 0.05 else ""
+                    print(f"  {feature}: {coef:.4f} (t={tstat:.3f}, p={pval:.4f}) {significance}")
+            
+            # Check for overfitting
+            if train_r2 - test_r2 > 0.1:
+                print(f"  ⚠ Warning: Potential overfitting (train R² - test R² = {train_r2 - test_r2:.3f})")
+            else:
+                print(f"  ✓ Model shows good generalization (train R² - test R² = {train_r2 - test_r2:.3f})")
+            
+            return model
+            
+        except Exception as e:
+            print(f"Error training multiple linear regression: {e}")
+            return None
     
     def train_random_forest(self, optimize_hyperparameters=True):
         """
@@ -537,8 +644,8 @@ class NonlinearModelAnalysis:
         
         for i, (model_name, results) in enumerate(plot_models.items()):
             ax1.scatter(self.y_test, results['y_test_pred'], 
-                       alpha=0.6, label=model_name.replace('_', ' ').title(), 
-                       color=colors[i % len(colors)])
+                       alpha=0.6, label=model_name.replace('_', ' ').title(),
+                       color=colors[(i+1) % len(colors)], s=30)
         
         # Perfect prediction line
         min_val = min(self.y_test.min(), min(r['y_test_pred'].min() for r in plot_models.values()))
@@ -557,7 +664,7 @@ class NonlinearModelAnalysis:
             residuals = self.y_test - results['y_test_pred']
             ax2.scatter(results['y_test_pred'], residuals, 
                        alpha=0.6, label=model_name.replace('_', ' ').title(),
-                       color=colors[i % len(colors)])
+                       color=colors[(i+1) % len(colors)], s=30)
         
         ax2.axhline(y=0, color='k', linestyle='--', alpha=0.5)
         ax2.set_xlabel('Predicted REVR')
@@ -575,14 +682,20 @@ class NonlinearModelAnalysis:
         x = np.arange(len(model_names))
         width = 0.35
         
-        ax3.bar(x - width/2, test_r2_scores, width, label='Test R²', alpha=0.8)
-        ax3.bar(x + width/2, cv_scores, width, label='CV R²', alpha=0.8)
+        # Plot bars
+        bars1 = ax3.bar(x - width/2, test_r2_scores, width, label='Test R²', alpha=0.8)
+        bars2 = ax3.bar(x + width/2, cv_scores, width, label='CV R²', alpha=0.8)
+        
+        # Color linear regression differently
+        if hasattr(self, 'linear_results'):
+            bars1[0].set_color('red')
+            bars2[0].set_color('red')
         
         ax3.set_xlabel('Models')
         ax3.set_ylabel('R² Score')
         ax3.set_title('Model Performance Comparison')
         ax3.set_xticks(x)
-        ax3.set_xticklabels([name.replace('_', ' ').title() for name in model_names])
+        ax3.set_xticklabels(model_names, rotation=45, ha='right')
         ax3.legend()
         ax3.grid(True, alpha=0.3)
         
@@ -609,7 +722,7 @@ class NonlinearModelAnalysis:
     
     def print_summary_table(self):
         """
-        Print a summary table comparing all models.
+        Print a summary table comparing all models including linear regression.
         """
         print("\n" + "="*80)
         print("MODEL COMPARISON SUMMARY")
@@ -617,6 +730,18 @@ class NonlinearModelAnalysis:
         
         # Create summary DataFrame
         summary_data = []
+        
+        # Add linear regression results if available
+        if hasattr(self, 'linear_results'):
+            summary_data.append({
+                'Model': 'Multiple Linear Regression',
+                'Test R²': f"{self.linear_results['test_r2']:.4f}",
+                'CV R²': 'N/A',
+                'Test RMSE': f"{self.linear_results['test_rmse']:.4f}",
+                'Test MAE': f"{self.linear_results['test_mae']:.4f}"
+            })
+        
+        # Add non-linear model results
         for model_name, results in self.results.items():
             summary_data.append({
                 'Model': model_name.replace('_', ' ').title(),

@@ -1,0 +1,4 @@
+Model,Test R²,CV R²,Test RMSE,Test MAE
+Multiple Linear Regression,0.2273,N/A,0.2062,0.1704
+Random Forest,0.2484,0.1797 (±0.0470),0.2034,0.1678
+Xgboost,0.2150,0.1783 (±0.0420),0.2078,0.1704
