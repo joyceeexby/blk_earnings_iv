@@ -13,7 +13,7 @@ WRDS_CONFIG = {
 ANALYSIS_CONFIG = {
     'start_quarter': 'Q1',
     'start_year': 2005,
-    'end_quarter': 'Q3', 
+    'end_quarter': 'Q4', 
     'end_year': 2023,
     'analysis_days_before': 30,  # Days before earnings to analyze
     'num_top_stocks': 500        # Number of top stocks by dollar volume
