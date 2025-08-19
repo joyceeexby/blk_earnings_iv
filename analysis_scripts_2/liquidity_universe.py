@@ -4,8 +4,7 @@ CRSP Liquidity Universe Module
 Build Top-N-by-Dollar-Volume universes on the first month-end of each quarter.
 
 - Filters to US common stocks (shrcd 10/11; exchcd 1/2/3) BEFORE ranking
-- Supports stocknames or msenames
-- Matches the "module + class + main()" structure you used for REVR
+- Saves to data_files/topN_liquidity_YYYY_YYYY.csv
 """
 
 import os
@@ -40,9 +39,7 @@ class CRSPLiquidityUniverse:
         self, start_year, end_year, num_top_stocks, shrcd=(10, 11), exchcd=(1, 2, 3)
     ):
         names_table = f"crsp.{self.security_table}"
-        sql = f"""
-WITH qdates AS (
-    -- first month-end in each calendar quarter in range
+        sql = f"""WITH qdates AS (
     SELECT MIN(date) AS date
     FROM (
         SELECT DISTINCT date,
@@ -53,7 +50,7 @@ WITH qdates AS (
     GROUP BY qstart
 ),
 ms AS (
-    SELECT m.permno, m.date, ABS(m.prc) AS prc_abs, m.vol
+    SELECT m.permno, m.date, ABS(m.prc) AS prc_abs, m.vol, m.cusip
     FROM crsp.msf m
     JOIN qdates q ON q.date = m.date
     WHERE m.vol IS NOT NULL AND m.vol > 0
@@ -62,12 +59,13 @@ names AS (
     SELECT permno, ticker, comnam, namedt,
            COALESCE(nameenddt, DATE '9999-12-31') AS nameenddt,
            shrcd, exchcd
-    FROM {names_table}
+    FROM crsp.stocknames
 ),
 joined AS (
     SELECT
         ms.date AS qdate,
         ms.permno,
+        ms.cusip,                 -- ✅ include cusip here
         (ms.prc_abs * ms.vol)::double precision AS dollar_vol,
         n.ticker,
         n.comnam
@@ -76,13 +74,14 @@ joined AS (
       ON n.permno = ms.permno
      AND n.namedt <= ms.date
      AND n.nameenddt >= ms.date
-    WHERE n.shrcd IN ({",".join(map(str, shrcd))})
-      AND n.exchcd IN ({",".join(map(str, exchcd))})
+    WHERE n.shrcd IN (10, 11)
+      AND n.exchcd IN (1, 2, 3)
 ),
 ranked AS (
     SELECT
         qdate,
         permno,
+        cusip,                    
         ticker,
         comnam,
         dollar_vol,
@@ -92,13 +91,14 @@ ranked AS (
 SELECT
     qdate,
     permno,
+    cusip,                        
     ticker,
     comnam,
     dollar_vol
 FROM ranked
-WHERE rn <= {int(num_top_stocks)}
+WHERE rn <= {num_top_stocks}
 ORDER BY qdate, dollar_vol DESC;
-"""
+    """
         return sql
 
     def top_dollar_volume_quarterly(
@@ -144,7 +144,7 @@ ORDER BY qdate, dollar_vol DESC;
             df['year'] = df['qdate'].dt.year
             df['quarter'] = df['qdate'].dt.quarter
 
-        base_cols = ['quarter_start_date','quarter_end_date','permno','ticker','comnam','dollar_vol']
+        base_cols = ['quarter_start_date','quarter_end_date','permno','ticker','cusip','comnam','dollar_vol']
         cols = (['year','quarter'] + base_cols) if add_year_quarter else base_cols
 
         out = (
