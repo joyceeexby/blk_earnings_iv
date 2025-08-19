@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Realized Earnings Volatility Ratio (REVR) Analysis
-Step 1: Calculate REVR for AAPL October 2022 earnings event
+REVR Analysis Module
+Calculate Realized Earnings Volatility Ratio (REVR)
 """
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import wrds
+from scipy import stats
+import warnings
+warnings.filterwarnings('ignore')
 
 class REVRAnalysis:
     """

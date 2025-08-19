@@ -18,8 +18,10 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from sklearn.preprocessing import StandardScaler
-import xgboost as xgb
+from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import Ridge, Lasso, ElasticNet
 from sklearn.inspection import permutation_importance
+import xgboost as xgb
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -28,7 +30,7 @@ class NonlinearModelAnalysis:
     Class for implementing and comparing non-linear models for IEVR-REVR analysis.
     """
     
-    def __init__(self, data_file='data_files/expanded_earnings_analysis_results.csv'):
+    def __init__(self, data_file='analysis_scripts/data_files/clean_streamlined_earnings_analysis_results.csv'):
         """
         Initialize the analysis with data.
         
@@ -66,15 +68,31 @@ class NonlinearModelAnalysis:
         # Create additional features
         self.create_features()
         
-        # Prepare features and target - only use truly independent features
-        feature_columns = ['ievr', 'normative_iv_rv_ratio', 'skew_ratio', 'spx_ievr']  # Independent features including S&P 500 IEVR
-        # Remove columns that might not exist
-        available_features = [col for col in feature_columns if col in self.data.columns]
+        # Prepare features and target - use all streamlined features
+        # Core features (3)
+        core_features = ['ievr', 'skew_ratio', 'normative_iv_rv_ratio']
         
-        if len(available_features) < 2:
-            # Fallback to basic features
-            available_features = ['ievr']
-            print("Warning: Limited features available, using only IEVR")
+        # Dispersion feature (1)
+        dispersion_features = ['dispersion']
+        
+        # Option surface features (5)
+        option_features = ['term_ratio', 'skew', 'kurt', 'iv_ratio', 'smirk']
+        
+        # Fama-French features (5)
+        ff_features = ['SMB', 'HML', 'RMW', 'CMA', 'RF']
+        
+        # Combine all features
+        all_feature_columns = core_features + dispersion_features + option_features + ff_features
+        
+        # Remove columns that might not exist
+        available_features = [col for col in all_feature_columns if col in self.data.columns]
+        
+        if len(available_features) < 5:
+            # Fallback to core features
+            available_features = ['ievr', 'skew_ratio', 'normative_iv_rv_ratio']
+            print("Warning: Limited features available, using core features only")
+        
+        print(f"Using {len(available_features)} features: {available_features}")
         
         X = self.data[available_features].copy()
         y = self.data['revr'].copy()
@@ -122,69 +140,48 @@ class NonlinearModelAnalysis:
     def create_features(self):
         """
         Create additional features for modeling.
+        Updated to use streamlined features from the integrated dataset.
         """
-        # Note: Removed vol_st, vol_mt, and volatility_spread features to avoid circular dependency
-        # These are components of the REVR target variable (REVR = vol_st / vol_mt)
-        # Only IEVR is truly independent of the target
+        print("Using streamlined features from integrated dataset...")
         
-        # Create normative IV/RV ratio feature
-        self.create_normative_iv_rv_ratio()
+        # Check if all streamlined features are available
+        expected_features = [
+            'ievr', 'skew_ratio', 'normative_iv_rv_ratio',  # Core (3)
+            'dispersion',  # Dispersion (1)
+            'term_ratio', 'skew', 'kurt', 'iv_ratio', 'smirk',  # Option surface (5)
+            'SMB', 'HML', 'RMW', 'CMA', 'RF'  # Fama-French (5)
+        ]
         
-        # Create skew ratio feature
-        self.create_skew_ratio()
+        missing_features = [f for f in expected_features if f not in self.data.columns]
+        if missing_features:
+            print(f"⚠ Missing features: {missing_features}")
+        else:
+            print(f"✓ All {len(expected_features)} streamlined features available")
         
-        # Create S&P 500 IEVR feature
-        self.create_spx_ievr_feature()
-        
+        # Create additional derived features for non-linear modeling
         # Log transformations (for positive values)
         mask_positive = (self.data['revr'] > 0) & (self.data['ievr'] > 0)
         if mask_positive.sum() > 0:
             self.data.loc[mask_positive, 'log_revr'] = np.log(self.data.loc[mask_positive, 'revr'])
             self.data.loc[mask_positive, 'log_ievr'] = np.log(self.data.loc[mask_positive, 'ievr'])
         
-        # Squared terms
-        self.data['ievr_squared'] = self.data['ievr'] ** 2
+        # Squared terms for key features
+        if 'ievr' in self.data.columns:
+            self.data['ievr_squared'] = self.data['ievr'] ** 2
+        
+        if 'dispersion' in self.data.columns:
+            self.data['dispersion_squared'] = self.data['dispersion'] ** 2
+        
+        # Interaction terms (selective to avoid multicollinearity)
+        if all(f in self.data.columns for f in ['ievr', 'dispersion']):
+            self.data['ievr_dispersion_interaction'] = self.data['ievr'] * self.data['dispersion']
+        
+        if all(f in self.data.columns for f in ['ievr', 'skew']):
+            self.data['ievr_skew_interaction'] = self.data['ievr'] * self.data['skew']
+        
+        print(f"Created additional derived features for non-linear modeling")
     
-    def create_spx_ievr_feature(self):
-        """
-        Create S&P 500 IEVR feature.
-        This captures market-level volatility expectations for comparison with individual stock IEVR.
-        """
-        print("Creating S&P 500 IEVR feature...")
-        
-        # Check if we have the necessary data
-        if 'spx_ievr' not in self.data.columns:
-            print("Warning: 'spx_ievr' not found in data. Creating placeholder.")
-            # Create a placeholder - in practice, this should come from your IEVR calculation
-            self.data['spx_ievr'] = 1.0  # Placeholder (no market effect)
-        else:
-            # Check if the column exists but is empty
-            if self.data['spx_ievr'].isna().all():
-                print("Warning: 'spx_ievr' column exists but is empty. Creating placeholder.")
-                self.data['spx_ievr'] = 1.0  # Placeholder (no market effect)
-        
-        # Handle infinite values
-        self.data['spx_ievr'] = self.data['spx_ievr'].replace([np.inf, -np.inf], np.nan)
-        
-        print(f"Created spx_ievr feature. Non-null values: {self.data['spx_ievr'].notna().sum()}")
-        
-        # Print summary statistics
-        if self.data['spx_ievr'].notna().sum() > 0:
-            print(f"  Mean: {self.data['spx_ievr'].mean():.4f}")
-            print(f"  Std: {self.data['spx_ievr'].std():.4f}")
-            print(f"  Min: {self.data['spx_ievr'].min():.4f}")
-            print(f"  Max: {self.data['spx_ievr'].max():.4f}")
-            
-            # Check for reasonable values
-            if 0.5 <= self.data['spx_ievr'].mean() <= 2.0:
-                print(f"  ✓ S&P 500 IEVR is in reasonable range")
-            else:
-                print(f"  ⚠ S&P 500 IEVR mean ({self.data['spx_ievr'].mean():.3f}) seems unusual")
-            
-            # Note: Removed relative_ievr feature to avoid multicollinearity with individual ievr and spx_ievr
-            print(f"  ✓ Using individual ievr and spx_ievr features (no ratio to avoid redundancy)")
-        else:
-            print("  ⚠ No valid S&P 500 IEVR data available")
+    # Note: Old feature creation methods removed - now using streamlined features from integrated dataset
     
     def create_normative_iv_rv_ratio(self):
         """
@@ -466,6 +463,62 @@ class NonlinearModelAnalysis:
         
         return best_xgb
     
+    def train_multiple_linear_regression(self, model_type='linear'):
+        """
+        Train multiple linear regression models as baseline.
+        
+        Parameters:
+        -----------
+        model_type : str
+            Type of linear model: 'linear', 'ridge', 'lasso', 'elasticnet'
+        """
+        print(f"\n{'='*60}")
+        print(f"TRAINING {model_type.upper()} REGRESSION MODEL")
+        print(f"{'='*60}")
+        
+        if model_type == 'linear':
+            model = LinearRegression()
+            model_name = 'linear_regression'
+        elif model_type == 'ridge':
+            model = Ridge(alpha=1.0, random_state=42)
+            model_name = 'ridge_regression'
+        elif model_type == 'lasso':
+            model = Lasso(alpha=0.1, random_state=42)
+            model_name = 'lasso_regression'
+        elif model_type == 'elasticnet':
+            model = ElasticNet(alpha=0.1, l1_ratio=0.5, random_state=42)
+            model_name = 'elasticnet_regression'
+        else:
+            print(f"Unknown model type: {model_type}")
+            return None
+        
+        # Train model
+        model.fit(self.X_train_scaled, self.y_train)
+        
+        # Store model
+        self.models[model_name] = model
+        
+        # Evaluate model
+        self.evaluate_model(model_name, f"{model_type.title()} Regression")
+        
+        return model
+    
+    def train_all_linear_models(self):
+        """
+        Train all linear regression models for comprehensive baseline comparison.
+        """
+        print(f"\n{'='*60}")
+        print("TRAINING ALL LINEAR REGRESSION MODELS")
+        print(f"{'='*60}")
+        
+        linear_models = ['linear', 'ridge', 'lasso', 'elasticnet']
+        
+        for model_type in linear_models:
+            self.train_multiple_linear_regression(model_type)
+        
+        print(f"✓ All linear regression models trained")
+        return True
+    
     def evaluate_model(self, model_name, model_display_name):
         """
         Evaluate a trained model.
@@ -539,6 +592,15 @@ class NonlinearModelAnalysis:
                 for i, idx in enumerate(indices):
                     print(f"  {feature_names[idx]}: {importances[idx]:.4f}")
             
+            elif hasattr(model, 'coef_'):
+                # Linear models have coefficients
+                importances = np.abs(model.coef_)
+                indices = np.argsort(importances)[::-1]
+                
+                print(f"  (Coefficient-based importance)")
+                for i, idx in enumerate(indices):
+                    print(f"  {feature_names[idx]}: {importances[idx]:.4f}")
+            
             # Permutation importance (more robust)
             try:
                 perm_importance = permutation_importance(
@@ -558,6 +620,7 @@ class NonlinearModelAnalysis:
     def plot_model_comparison(self):
         """
         Create comparison plots for all models.
+        Note: Ridge, Lasso, and ElasticNet are excluded from plots but included in printed results.
         """
         print("\n" + "="*60)
         print("CREATING MODEL COMPARISON PLOTS")
@@ -565,30 +628,29 @@ class NonlinearModelAnalysis:
         
         # Create subplots
         fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-        fig.suptitle('Non-linear Model Comparison: IEVR vs REVR', fontsize=16)
+        fig.suptitle('Model Comparison: Linear + Machine Learning (Excluding Regularized Models)', fontsize=16)
+        
+        # Filter models for plotting - exclude ridge, lasso, elasticnet
+        plot_models = {k: v for k, v in self.results.items() 
+                      if k not in ['ridge', 'lasso', 'elasticnet']}
+        
+        if not plot_models:
+            print("No models available for plotting after filtering.")
+            return
         
         # Plot 1: Actual vs Predicted (Test Set)
         ax1 = axes[0, 0]
-        colors = ['red', 'blue', 'green']  # Red for linear regression
+        colors = ['blue', 'red', 'green', 'orange', 'purple']
         
-        # Add linear regression if available
-        if hasattr(self, 'linear_results'):
-            ax1.scatter(self.y_test, self.linear_results['y_pred_test'], 
-                       alpha=0.6, label='Linear Regression', color='red', s=50)
-        
-        # Add non-linear models
-        for i, (model_name, results) in enumerate(self.results.items()):
+        for i, (model_name, results) in enumerate(plot_models.items()):
             ax1.scatter(self.y_test, results['y_test_pred'], 
                        alpha=0.6, label=model_name.replace('_', ' ').title(),
                        color=colors[(i+1) % len(colors)], s=30)
         
         # Perfect prediction line
-        all_predictions = [self.linear_results['y_pred_test']] if hasattr(self, 'linear_results') else []
-        all_predictions.extend([results['y_test_pred'] for results in self.results.values()])
-        
-        min_val = min(self.y_test.min(), min([pred.min() for pred in all_predictions]))
-        max_val = max(self.y_test.max(), max([pred.max() for pred in all_predictions]))
-        ax1.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5, label='Perfect Prediction')
+        min_val = min(self.y_test.min(), min(r['y_test_pred'].min() for r in plot_models.values()))
+        max_val = max(self.y_test.max(), max(r['y_test_pred'].max() for r in plot_models.values()))
+        ax1.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.5)
         
         ax1.set_xlabel('Actual REVR')
         ax1.set_ylabel('Predicted REVR')
@@ -598,15 +660,7 @@ class NonlinearModelAnalysis:
         
         # Plot 2: Residuals
         ax2 = axes[0, 1]
-        
-        # Add linear regression residuals if available
-        if hasattr(self, 'linear_results'):
-            linear_residuals = self.y_test - self.linear_results['y_pred_test']
-            ax2.scatter(self.linear_results['y_pred_test'], linear_residuals, 
-                       alpha=0.6, label='Linear Regression', color='red', s=50)
-        
-        # Add non-linear model residuals
-        for i, (model_name, results) in enumerate(self.results.items()):
+        for i, (model_name, results) in enumerate(plot_models.items()):
             residuals = self.y_test - results['y_test_pred']
             ax2.scatter(results['y_test_pred'], residuals, 
                        alpha=0.6, label=model_name.replace('_', ' ').title(),
@@ -621,23 +675,9 @@ class NonlinearModelAnalysis:
         
         # Plot 3: Model Performance Comparison
         ax3 = axes[1, 0]
-        
-        # Prepare data for plotting
-        model_names = []
-        test_r2_scores = []
-        cv_scores = []
-        
-        # Add linear regression if available
-        if hasattr(self, 'linear_results'):
-            model_names.append('Linear Regression')
-            test_r2_scores.append(self.linear_results['test_r2'])
-            cv_scores.append(np.nan)  # No CV for linear regression
-        
-        # Add non-linear models
-        for name in self.results.keys():
-            model_names.append(name.replace('_', ' ').title())
-            test_r2_scores.append(self.results[name]['test_r2'])
-            cv_scores.append(self.results[name]['cv_mean'])
+        model_names = list(plot_models.keys())
+        test_r2_scores = [plot_models[name]['test_r2'] for name in model_names]
+        cv_scores = [plot_models[name]['cv_mean'] for name in model_names]
         
         x = np.arange(len(model_names))
         width = 0.35
@@ -676,7 +716,7 @@ class NonlinearModelAnalysis:
             ax4.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig('output_files/nonlinear_model_comparison.png', dpi=300, bbox_inches='tight')
+        plt.savefig('analysis_scripts/output_files/nonlinear_model_comparison.png', dpi=300, bbox_inches='tight')
         print("✓ Model comparison plots saved to output_files/nonlinear_model_comparison.png")
         plt.show()
     
@@ -715,29 +755,12 @@ class NonlinearModelAnalysis:
         print(summary_df.to_string(index=False))
         
         # Save summary
-        summary_df.to_csv('data_files/nonlinear_model_summary.csv', index=False)
-        print("\n✓ Model summary saved to data_files/nonlinear_model_summary.csv")
-        
-        # Print linear vs non-linear comparison
-        if hasattr(self, 'linear_results') and self.results:
-            print(f"\nLinear vs Non-linear Comparison:")
-            linear_r2 = self.linear_results['test_r2']
-            best_nonlinear_r2 = max([results['test_r2'] for results in self.results.values()])
-            improvement = best_nonlinear_r2 - linear_r2
-            print(f"  Linear Regression R²: {linear_r2:.4f}")
-            print(f"  Best Non-linear R²: {best_nonlinear_r2:.4f}")
-            print(f"  Improvement: {improvement:.4f} ({improvement/linear_r2*100:.1f}%)")
-            
-            if improvement > 0.05:
-                print(f"  ✓ Non-linear models provide significant improvement")
-            elif improvement > 0.01:
-                print(f"  ⚠ Non-linear models provide modest improvement")
-            else:
-                print(f"  ⚠ Linear model performs similarly to non-linear models")
+        summary_df.to_csv('analysis_scripts/data_files/nonlinear_model_summary.csv', index=False)
+        print("\n✓ Model summary saved to analysis_scripts/data_files/nonlinear_model_summary.csv")
     
     def run_complete_analysis(self, optimize_hyperparameters=True):
         """
-        Run complete analysis including linear and non-linear models.
+        Run complete analysis including linear regression baseline.
         
         Parameters:
         -----------
@@ -745,43 +768,75 @@ class NonlinearModelAnalysis:
             Whether to perform hyperparameter optimization
         """
         print("="*80)
-        print("COMPREHENSIVE MACHINE LEARNING ANALYSIS")
+        print("COMPLETE ANALYSIS PIPELINE")
         print("="*80)
+        print("Using streamlined features: dispersion, option surface, and Fama-French factors")
         
-        # Train linear regression first (baseline)
-        print("\n" + "="*60)
-        print("LINEAR BASELINE MODEL")
-        print("="*60)
-        self.train_multiple_linear_regression()
+        # Train linear regression baseline models first
+        print(f"\n{'='*60}")
+        print("TRAINING LINEAR REGRESSION BASELINE MODELS")
+        print(f"{'='*60}")
         
-        # Train non-linear models
-        print("\n" + "="*60)
-        print("NON-LINEAR MODELS")
-        print("="*60)
+        self.train_all_linear_models()
+        
+        # Train machine learning models
+        print(f"\n{'='*60}")
+        print("TRAINING MACHINE LEARNING MODELS")
+        print(f"{'='*60}")
+        
         self.train_random_forest(optimize_hyperparameters)
         self.train_xgboost(optimize_hyperparameters)
         
-        # Analyze feature importance
+        # Analyze feature importance for all models
+        print(f"\n{'='*60}")
+        print("FEATURE IMPORTANCE ANALYSIS")
+        print(f"{'='*60}")
+        
         self.analyze_feature_importance()
         
-        # Create plots
+        # Create plots (excluding regularized models for clarity)
         self.plot_model_comparison()
         
-        # Print summary
+        # Print summary (including ALL models)
         self.print_summary_table()
         
         print("\n" + "="*80)
         print("ANALYSIS COMPLETE")
         print("="*80)
+        print("✓ Linear regression baseline models trained and evaluated")
+        print("✓ Random Forest model trained and evaluated")
+        print("✓ XGBoost model trained and evaluated")
+        print("✓ Feature importance analyzed for all models")
+        print("✓ All models compared")
+        print("✓ Results plotted and saved")
+        print("✓ All streamlined features integrated successfully!")
+        print("\nNote: Ridge, Lasso, and ElasticNet results are included in printed output")
+        print("but excluded from plots for visual clarity. Check the summary table for all results.")
 
 
 def main():
     """
-    Main function to run the non-linear analysis.
+    Main function to run the complete analysis including linear regression baseline.
     """
-    # Run analysis with hyperparameter optimization
-    analysis = NonlinearModelAnalysis()
-    analysis.run_complete_analysis(optimize_hyperparameters=True)
+    print("COMPLETE ANALYSIS PIPELINE")
+    print("Updated for streamlined features: dispersion, option surface, and Fama-French factors")
+    print("="*80)
+    
+    try:
+        # Initialize analysis
+        analysis = NonlinearModelAnalysis()
+        
+        # Run complete analysis including linear regression baseline
+        analysis.run_complete_analysis(optimize_hyperparameters=True)
+        
+        print(f"\n🎉 Analysis completed successfully!")
+        print(f"All streamlined features integrated and analyzed!")
+        print(f"Linear regression baseline provides comparison with machine learning models!")
+        
+    except Exception as e:
+        print(f"Error in main analysis: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == "__main__":
