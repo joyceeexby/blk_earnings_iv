@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Execution Script for Option Surface Features Generation 2007-2023
+Execution Script for Option Surface Features Generation (Configurable Date Range)
 Simple script to run the option features generation with WRDS connection
-Modified to start from 2007 (skipping 2005-2006)
+Date range is configurable in generate_option_features_2005_2023.py
 """
 
 import wrds
@@ -15,9 +15,10 @@ def main():
     """
     Main execution function with WRDS connection.
     """
-    print("🚀 STARTING OPTION SURFACE FEATURES GENERATION (2007-2023)")
+    print("🚀 STARTING OPTION SURFACE FEATURES GENERATION (Configurable Date Range)")
     print("="*80)
-    print("⏭️ Skipping 2005-2006 (already completed)")
+    print("📅 Date range is configured in generate_option_features_2005_2023.py")
+    print("⏭️ Existing files will be automatically skipped")
     
     try:
         # Connect to WRDS
