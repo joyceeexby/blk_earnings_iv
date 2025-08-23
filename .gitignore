@@ -1,0 +1,11 @@
+# Ignore large data files
+analysis_scripts_2/data_files/vol_df.csv
+
+# Ignore all CSVs in that folder
+analysis_scripts_2/data_files/*.csv
+
+# Ignore compiled Python files
+*.pyc
+
+# Ignore MacOS .DS_Store
+.DS_Store
