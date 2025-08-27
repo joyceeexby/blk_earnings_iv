@@ -1,4 +1,3 @@
-dsoomro#!/usr/bin/env python3
 """
 EPS Estimate Momentum Analysis
 Calculates and plots momentum of mean EPS estimates across the universe
