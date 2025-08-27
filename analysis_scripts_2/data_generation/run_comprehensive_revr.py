@@ -5,8 +5,8 @@ Runner script for Comprehensive REVR Analysis (Static Stock List - ST/MT Methodo
 
 import sys
 import os
-from comprehensive_revr_analysis import ComprehensiveREVRAnalysis
-from comprehensive_revr_config import *
+from data_generation.comprehensive_revr_analysis import ComprehensiveREVRAnalysis
+from data_generation.comprehensive_revr_config import *
 import wrds
 
 def main():

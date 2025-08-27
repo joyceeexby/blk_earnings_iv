@@ -1,4 +1,0 @@
-Model,Windows,Avg_Test_R2,Std_Test_R2,Best_Test_R2,Worst_Test_R2,Avg_Test_RMSE,Std_Test_RMSE,Positive_R2_Count,Positive_R2_Pct,Avg_REVR_lag1_Coef,Std_REVR_lag1_Coef,Avg_REVR_lag2_Coef,Std_REVR_lag2_Coef
-Original (2 features),26,0.1185,0.0807,0.2229,-0.1788,0.2168,0.0093,24,92.3077,,,,
-REVR_lag1 (3 features),26,0.1215,0.0757,0.2149,-0.1536,0.2203,0.0105,24,92.3077,0.0395,0.0137,,
-Full Lags (4 features),26,0.1226,0.0687,0.2096,-0.1128,0.2193,0.0104,24,92.3077,0.0358,0.0126,0.0469,0.0253
