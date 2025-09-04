@@ -1,5 +1,6 @@
 """
 EPS Features at Analysis Dates (21 BDays Pre-Earnings) — Ticker + CUSIP Only
+https://wrds-www.wharton.upenn.edu/pages/get-data/lseg-ibes/ibes-academic/summary-history/summary-statistics/ - table
 -----------------------------------------------------------------------------
 - Loads earnings dates: analysis_scripts_2/data_files/earnings_dates.csv
   Required: earnings_date. Optional: cusip / cusip8 / ticker.
@@ -113,6 +114,7 @@ def compute_momentum(ts: pd.Series) -> pd.DataFrame:
     roll_mean_1y = s.rolling(252, min_periods=60).mean()
     roll_std_1y  = s.rolling(252, min_periods=60).std()
     out["z_score_momentum"] = (s - roll_mean_1y) / roll_std_1y
+    out["z_score_momentum_smoothed"] = (out["z_score_momentum"].rolling(60, min_periods=20).mean())
     return out
 
 # --------------- Main -------------------
@@ -236,7 +238,7 @@ def main():
             "date","cusip8","ticker",
             "meanest","stdev","numest","dispersion_pct",
             "momentum_1m","momentum_3m","momentum_6m",
-            "rolling_momentum_3m","z_score_momentum"
+            "rolling_momentum_3m","z_score_momentum_smoothed"
         ]
         right_cols = [c for c in right_cols if c in fsub.columns]
         fsub_use = fsub[right_cols].rename(columns={
@@ -244,6 +246,7 @@ def main():
             "stdev": "stdev_ibes",
             "numest": "numest_ibes",
             "dispersion_pct": "dispersion_pct_ibes",
+            "z_score_momentum_smoothed": "z_score_momentum",
         })
 
         merged = pd.merge_asof(
