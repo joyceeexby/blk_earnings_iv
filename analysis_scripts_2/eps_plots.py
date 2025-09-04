@@ -38,7 +38,7 @@ from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
 # =============== CONFIG ===============
 IN_PATH   = "analysis_scripts_2/data_files/eps_features_at_analysis_dates.csv"  # path to your CSV
 OUT_DIR   = "analysis_scripts_2/data_files/eps_plots"
-DEMO_TICKER = "PG"      # e.g., "AAPL" to force; None -> auto choose most frequent
+DEMO_TICKER = "AAPL"      # e.g., "AAPL" to force; None -> auto choose most frequent
 
 # (Optional) make analysis dates match canonical T*−BD_LAG with tolerance
 FORCE_CANONICAL_DATES = True
@@ -263,6 +263,7 @@ else:
     )
     ax1.axhline(0, color=pal["lin"], ls="--", lw=1)
     ax1.set_ylabel("z-score momentum")
+    ax1.set_ylim(0, 4)
 
     # Right axis: dispersion
     h2, = ax2.plot(
@@ -270,6 +271,8 @@ else:
         color=pal["pre"], lw=2, label="Dispersion (RHS)"
     )
     ax2.set_ylabel("Dispersion (%)")
+    ax2.set_ylim(0, 0.15)   # <--- or (0, 15) if values are already in %
+    ax2.yaxis.set_major_formatter(FuncFormatter(lambda v, pos: f"{v*100:.0f}%"))
     if np.nanmax(d_pair["dispersion_pct_ibes"].values) <= 1.0:
         ax2.yaxis.set_major_formatter(FuncFormatter(lambda v, pos: f"{v*100:.0f}%"))
 
