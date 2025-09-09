@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Enhanced Algorithm Comparison for REVR Prediction
+Enhanced Algorithm Comparison for REVR Prediction - 7 Feature Model
 Compares Linear Regression, Random Forest, and XGBoost using rolling windows
-Features: IEVR + normative_iv_rv_ratio + SKEW + KURT + IV_RATIO + SMIRK + vol_hl7 + vol_hl10 + vol_hl21 + z_score_momentum
+Features: IEVR + normative_iv_rv_ratio + IV_RATIO + SMIRK + vol_hl21 + z_score_momentum + dispersion_pct_ibes
 """
 
 import pandas as pd
@@ -10,10 +10,13 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
 import warnings
 warnings.filterwarnings('ignore')
+
+# LSTM model removed as requested
 
 try:
     from xgboost import XGBRegressor
@@ -33,12 +36,13 @@ class EnhancedAlgorithmComparison:
     def __init__(self):
         self.df = None
         self.features = [
-            'ievr', 'normative_iv_rv_ratio', 'SKEW', 'KURT', 'IV_RATIO', 
-            'SMIRK', 'vol_hl7', 'vol_hl10', 'vol_hl21', 'z_score_momentum'
+            'ievr', 'normative_iv_rv_ratio', 'IV_RATIO', 
+            'SMIRK', 'vol_hl21', 'z_score_momentum', 'dispersion_pct_ibes'
         ]
         self.target = 'revr'
         self.results = []
         self.algorithm_configs = None
+        self.predictions = []  # Store predictions for output
         
     def load_data(self):
         """Load and prepare the dataset"""
@@ -46,14 +50,23 @@ class EnhancedAlgorithmComparison:
         print("="*50)
         
         try:
-            # Try momentum dataset first
+            # Try model_df dataset first
+            import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            data_dir = os.path.join(script_dir, '..', '..', 'data_files')
+            
             try:
-                self.df = pd.read_csv('data_files/final_merged_dataset_with_momentum_final.csv')
-                print(f"✅ Loaded momentum dataset: {len(self.df):,} observations")
+                self.df = pd.read_csv(os.path.join(data_dir, 'model_df.csv'))
+                print(f"✅ Loaded model_df dataset: {len(self.df):,} observations")
             except FileNotFoundError:
-                # Fallback to main dataset
-                self.df = pd.read_csv('data_files/final_merged_dataset.csv')
-                print(f"✅ Loaded main dataset: {len(self.df):,} observations")
+                # Fallback to updated momentum dataset
+                try:
+                    self.df = pd.read_csv(os.path.join(data_dir, 'final_merged_dataset_with_momentum_updated.csv'))
+                    print(f"✅ Loaded updated momentum dataset: {len(self.df):,} observations")
+                except FileNotFoundError:
+                    # Final fallback to original momentum dataset
+                    self.df = pd.read_csv(os.path.join(data_dir, 'final_merged_dataset_with_momentum_final.csv'))
+                    print(f"✅ Loaded original momentum dataset: {len(self.df):,} observations")
             
             # Convert earnings_date to datetime
             self.df['earnings_date'] = pd.to_datetime(self.df['earnings_date'])
@@ -113,6 +126,30 @@ class EnhancedAlgorithmComparison:
         except FileNotFoundError:
             print("❌ Dataset file not found!")
             return False
+    
+    def create_baseline_features(self):
+        """
+        Create baseline features: average of last 4 earnings REVR values
+        """
+        print(f"\n📊 CREATING BASELINE FEATURES")
+        print("-" * 50)
+        
+        # Sort by ticker and date for lag calculations
+        self.df = self.df.sort_values(['ticker', 'earnings_date']).reset_index(drop=True)
+        
+        # Create rolling average of last 4 earnings
+        self.df['revr_avg_4'] = self.df.groupby('ticker')['revr'].rolling(
+            window=4, min_periods=4
+        ).mean().reset_index(0, drop=True).shift(1)  # Shift to avoid look-ahead bias
+        
+        # Primary baseline: Average of last 4 earnings
+        self.df['baseline_4avg'] = self.df['revr_avg_4']
+        
+        # Show coverage
+        valid_count = self.df['baseline_4avg'].notna().sum()
+        total_count = len(self.df)
+        coverage = 100.0 * valid_count / total_count
+        print(f"  baseline_4avg: {valid_count:6,} ({coverage:5.1f}% coverage)")
     
     def create_rolling_windows(self, train_years=5, val_months=6, test_months=6):
         """
@@ -234,26 +271,129 @@ class EnhancedAlgorithmComparison:
                 'color': '#FF6633',  # BlackRock orange accent
                 'marker': '^',
                 'description': 'XGBoost Regressor'
+            },
+            'Baseline': {
+                'model': None,  # Special handling for baseline
+                'name': 'Baseline (4-Avg)',
+                'color': '#8C0000',  # BlackRock dark red
+                'marker': 'D',
+                'description': 'Average of Last 4 Earnings',
+                'type': 'baseline'
             }
         }
+        
+        # LSTM removed as requested
         
         print(f"\n🤖 ALGORITHM CONFIGURATIONS")
         print("="*40)
         for algo_name, config in self.algorithm_configs.items():
             print(f"✅ {config['name']}: {config['description']}")
     
-    def evaluate_algorithm(self, train_data, val_data, test_data, algorithm_config, algorithm_name):
+    # LSTM methods removed as requested
+    
+    def _collect_predictions(self, test_data, predictions, algorithm_name, window):
+        """
+        Collect predictions for saving to CSV file
+        """
+        for i, (idx, row) in enumerate(test_data.iterrows()):
+            prediction_record = {
+                'ticker': row['ticker'] if 'ticker' in row else '',
+                'earnings_date': str(row['earnings_date']) if 'earnings_date' in row else '',
+                'permno': row['permno'] if 'permno' in row else '',
+                'combination': 'Enhanced_7_Features',
+                'algorithm': algorithm_name,
+                'window_id': window['window_id'],
+                'test_start': str(window['test_start']),
+                'test_end': str(window['test_end']),
+                'train_start': str(window['train_start']),
+                'train_end': str(window['train_end']),
+                'period': 'test',
+                'actual_revr': row[self.target],
+                'predicted_revr': predictions[i],
+                'prediction_error': predictions[i] - row[self.target],
+                'abs_prediction_error': abs(predictions[i] - row[self.target])
+            }
+            
+            # Add all feature values
+            for feature in self.features:
+                prediction_record[feature] = row.get(feature, np.nan)
+            
+            # Add season and year if available
+            if 'season' in row:
+                prediction_record['season'] = row['season']
+            if 'year' in row:
+                prediction_record['year'] = row['year']
+            
+            self.predictions.append(prediction_record)
+    
+    def _evaluate_baseline(self, train_data, val_data, test_data, algorithm_name, window=None):
+        """
+        Evaluate the baseline model (average of last 4 earnings)
+        """
+        try:
+            if 'baseline_4avg' not in test_data.columns:
+                print(f"    ❌ {algorithm_name}: baseline_4avg column not found in test data")
+                return None
+            
+            # Get test data with baseline feature
+            test_clean = test_data[['baseline_4avg', self.target, 'ticker', 'earnings_date']].dropna()
+            
+            if len(test_clean) < 5:
+                print(f"    ⚠️ {algorithm_name}: Insufficient data ({len(test_clean)} records)")
+                return None
+            
+            # Store original test data indices for prediction collection
+            test_clean_with_meta = test_data.loc[test_clean.index].reset_index(drop=True)
+            
+            # Prepare target and predictions
+            y_test = test_clean[self.target]
+            y_pred = test_clean['baseline_4avg']
+            
+            # Calculate metrics
+            test_r2 = r2_score(y_test, y_pred)
+            test_rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+            test_mae = mean_absolute_error(y_test, y_pred)
+            
+            print(f"    ✅ {algorithm_name}: R² = {test_r2:.4f}, RMSE = {test_rmse:.4f}")
+            
+            # Collect predictions for output file
+            if window is not None:
+                self._collect_predictions(test_clean_with_meta, y_pred.values, algorithm_name, window)
+            
+            return {
+                'test_r2': test_r2,
+                'test_rmse': test_rmse,
+                'test_mae': test_mae,
+                'train_size': 0,  # Baseline doesn't use training data
+                'test_size': len(test_clean),
+                'feature_importance': None  # Baseline doesn't have feature importance
+            }
+            
+        except Exception as e:
+            print(f"    ❌ {algorithm_name} failed: {str(e)[:100]}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def evaluate_algorithm(self, train_data, val_data, test_data, algorithm_config, algorithm_name, window=None):
         """
         Evaluate a single algorithm on the given data splits
         """
         try:
-            # Prepare data
+            # Handle baseline model separately
+            if algorithm_name == 'Baseline':
+                return self._evaluate_baseline(train_data, val_data, test_data, algorithm_name, window)
+            
+            # Prepare data for ML models
             all_required_cols = self.features + [self.target]
             train_clean = train_data[all_required_cols].dropna()
             test_clean = test_data[all_required_cols].dropna()
             
             if len(train_clean) < 50 or len(test_clean) < 5:
                 return None
+            
+            # Store original test data indices for prediction collection
+            test_clean_with_meta = test_data.loc[test_clean.index]
             
             # Prepare features and target
             X_train = train_clean[self.features]
@@ -267,22 +407,30 @@ class EnhancedAlgorithmComparison:
             # Create a fresh model instance to avoid contamination
             if algorithm_name == 'LinearRegression':
                 model = LinearRegression()
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
+                
             elif algorithm_name == 'RandomForest':
                 model = RandomForestRegressor(
                     n_estimators=100, max_depth=10, min_samples_split=20,
                     min_samples_leaf=10, random_state=42, n_jobs=-1
                 )
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
+                
             elif algorithm_name == 'XGBoost':
                 model = XGBRegressor(
                     n_estimators=100, max_depth=6, learning_rate=0.1,
                     subsample=0.8, colsample_bytree=0.8, random_state=42,
                     n_jobs=-1, verbosity=0
                 )
-            
-            model.fit(X_train, y_train)
-            
-            # Make predictions
-            y_pred = model.predict(X_test)
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
+                
+            # LSTM evaluation removed as requested
+            else:
+                # Fallback for unknown algorithms
+                return None
             
             # Calculate metrics
             test_r2 = r2_score(y_test, y_pred)
@@ -295,6 +443,10 @@ class EnhancedAlgorithmComparison:
                 feature_importance = dict(zip(self.features, model.feature_importances_))
             elif hasattr(model, 'coef_'):
                 feature_importance = dict(zip(self.features, np.abs(model.coef_)))
+            
+            # Collect predictions for output file
+            if window is not None:
+                self._collect_predictions(test_clean_with_meta, y_pred, algorithm_name, window)
             
             return {
                 'test_r2': test_r2,
@@ -352,7 +504,7 @@ class EnhancedAlgorithmComparison:
             
             # Test each algorithm
             for algo_name, algo_config in self.algorithm_configs.items():
-                result = self.evaluate_algorithm(train_data, val_data, test_data, algo_config, algo_name)
+                result = self.evaluate_algorithm(train_data, val_data, test_data, algo_config, algo_name, window)
                 
                 if result:
                     window_results[f'{algo_name}_r2'] = result['test_r2']
@@ -397,11 +549,11 @@ class EnhancedAlgorithmComparison:
             rmse_col = f'{algo_name}_rmse'
             
             if r2_col in self.results.columns:
-                avg_r2 = self.results[r2_col].mean()
-                std_r2 = self.results[r2_col].std()
+                avg_r2 = self.results[r2_col].mean() * 100  # Convert to percentage
+                std_r2 = self.results[r2_col].std() * 100   # Convert to percentage
                 avg_rmse = self.results[rmse_col].mean()
                 
-                print(f"{algo_config['name']:15s}: R² = {avg_r2:.4f} (±{std_r2:.4f}), RMSE = {avg_rmse:.4f}")
+                print(f"{algo_config['name']:15s}: R² = {avg_r2:.2f}% (±{std_r2:.2f}%), RMSE = {avg_rmse:.4f}")
         
         # Best performing algorithm
         r2_means = {}
@@ -416,7 +568,7 @@ class EnhancedAlgorithmComparison:
             
             print(f"\nBEST PERFORMING ALGORITHM:")
             print("-" * 30)
-            print(f"🏆 {best_config['name']}: R² = {r2_means[best_algo]:.4f}")
+            print(f"🏆 {best_config['name']}: R² = {r2_means[best_algo]*100:.2f}%")
         
         # Year-by-year breakdown
         print(f"\nYEAR-BY-YEAR PERFORMANCE:")
@@ -466,14 +618,18 @@ class EnhancedAlgorithmComparison:
         plt.tight_layout()
         
         # Save main comparison
-        output_path = 'output_files/enhanced_algorithm_comparison.png'
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'enhanced_algorithm_comparison.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Algorithm comparison saved: {output_path}")
         
         plt.close()
         
-        # Create focused time series plot
-        self._create_focused_time_series_plot()
+        # Skip focused time series plot as requested
     
     def _plot_performance_over_time(self, ax):
         """Plot R² performance over time for all algorithms"""
@@ -488,14 +644,16 @@ class EnhancedAlgorithmComparison:
         for algo_name, algo_config in self.algorithm_configs.items():
             r2_col = f'{algo_name}_r2'
             if r2_col in self.results.columns:
-                ax.plot(x_axis, self.results[r2_col], 
+                # Convert R² to percentage
+                r2_percentage = self.results[r2_col] * 100
+                ax.plot(x_axis, r2_percentage, 
                        label=algo_config['name'], 
                        color=algo_config['color'], 
                        marker=algo_config['marker'],
                        markersize=6, linewidth=2, alpha=0.8)
         
         ax.set_xlabel(x_label, fontsize=12, color='#003366', fontweight='semibold')
-        ax.set_ylabel('Test R²', fontsize=12, color='#003366', fontweight='semibold')
+        ax.set_ylabel('Test R² (%)', fontsize=12, color='#003366', fontweight='semibold')
         ax.set_title('Algorithm Performance Over Time', 
                      fontsize=14, fontweight='bold', color='#003366', pad=20)
         ax.legend(fontsize=10, loc='upper left', frameon=True, fancybox=True, 
@@ -505,15 +663,24 @@ class EnhancedAlgorithmComparison:
         # Highlight 2018 underperformance
         if 'test_start' in self.results.columns:
             ax.axvspan(pd.Timestamp('2018-01-01'), pd.Timestamp('2018-12-31'), 
-                       alpha=0.2, color='#FF6633', label='2018 Market Stress')
+                       alpha=0.2, color='#FF6633', label='2018 Volmageddon')
+            # Add text annotation for 2018 volmageddon
+            ax.text(pd.Timestamp('2018-06-15'), ax.get_ylim()[1]*0.95, '2018 Volmageddon', 
+                    ha='center', va='top', fontsize=11, color='darkred', fontweight='bold',
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor='white', edgecolor='red', alpha=0.9))
         elif 'window_id' in self.results.columns:
             windows_2018 = self.results[self.results['test_year'] == 2018]['window_id']
             if len(windows_2018) > 0:
                 min_window = windows_2018.min() - 0.5
                 max_window = windows_2018.max() + 0.5
                 ax.axvspan(min_window, max_window, alpha=0.2, color='#FF6633')
+                # Add text annotation for 2018 volmageddon in window mode
+                mid_window = (min_window + max_window) / 2
+                ax.text(mid_window, ax.get_ylim()[1]*0.95, '2018 Volmageddon', 
+                        ha='center', va='top', fontsize=11, color='darkred', fontweight='bold',
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor='white', edgecolor='red', alpha=0.9))
         
-        # Add horizontal line at 0
+        # Add horizontal line at 0%
         ax.axhline(y=0, color='#8C8C8C', linestyle='-', alpha=0.7, linewidth=1)
     
     def _plot_average_performance(self, ax):
@@ -525,7 +692,7 @@ class EnhancedAlgorithmComparison:
         for algo_name, algo_config in self.algorithm_configs.items():
             r2_col = f'{algo_name}_r2'
             if r2_col in self.results.columns:
-                avg_r2 = self.results[r2_col].mean()
+                avg_r2 = self.results[r2_col].mean() * 100  # Convert to percentage
                 algorithms.append(algo_config['name'])
                 avg_r2s.append(avg_r2)
                 colors.append(algo_config['color'])
@@ -535,15 +702,15 @@ class EnhancedAlgorithmComparison:
         # Add value labels on bars
         for bar, value in zip(bars, avg_r2s):
             height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height + 0.005,
-                   f'{value:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=11)
+            ax.text(bar.get_x() + bar.get_width()/2., height + 0.2,
+                   f'{value:.1f}%', ha='center', va='bottom', fontweight='bold', fontsize=11)
         
-        ax.set_ylabel('Average Test R²', fontsize=12, color='#003366', fontweight='semibold')
+        ax.set_ylabel('Average Test R² (%)', fontsize=12, color='#003366', fontweight='semibold')
         ax.set_title('Average Performance Comparison', 
                      fontsize=14, fontweight='bold', color='#003366', pad=20)
         ax.grid(True, alpha=0.3, axis='y')
         
-        # Add horizontal line at 0
+        # Add horizontal line at 0%
         ax.axhline(y=0, color='#8C8C8C', linestyle='-', alpha=0.7, linewidth=1)
     
     def _create_focused_time_series_plot(self):
@@ -585,8 +752,8 @@ class EnhancedAlgorithmComparison:
         # Highlight 2018 with better styling
         if 'test_start' in self.results.columns:
             ax.axvspan(pd.Timestamp('2018-01-01'), pd.Timestamp('2018-12-31'), 
-                       alpha=0.15, color='red', label='2018 Market Regime')
-            ax.text(pd.Timestamp('2018-06-15'), ax.get_ylim()[1]*0.9, '2018\nMarket Stress', 
+                       alpha=0.15, color='red', label='2018 Volmageddon')
+            ax.text(pd.Timestamp('2018-06-15'), ax.get_ylim()[1]*0.9, '2018\nVolmageddon', 
                     ha='center', va='top', fontsize=11, color='darkred', fontweight='bold',
                     bbox=dict(boxstyle="round,pad=0.3", facecolor='white', edgecolor='red', alpha=0.8))
         
@@ -609,14 +776,45 @@ class EnhancedAlgorithmComparison:
         
         plt.close()
     
+    def save_predictions(self):
+        """Save detailed predictions to CSV file"""
+        if len(self.predictions) > 0:
+            # Create output directory
+            import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            output_dir = os.path.join(script_dir, 'output_files')
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Convert to DataFrame and save
+            predictions_df = pd.DataFrame(self.predictions)
+            predictions_path = os.path.join(output_dir, 'enhanced_7_features_predictions.csv')
+            predictions_df.to_csv(predictions_path, index=False)
+            
+            print(f"✅ Predictions saved: {predictions_path}")
+            print(f"📊 Total predictions: {len(predictions_df):,}")
+            print(f"🔢 Algorithms: {predictions_df['algorithm'].nunique()}")
+            print(f"📅 Date range: {predictions_df['earnings_date'].min()} to {predictions_df['earnings_date'].max()}")
+            
+            # Show sample of predictions
+            print(f"\n📋 SAMPLE PREDICTIONS:")
+            print(predictions_df[['ticker', 'earnings_date', 'algorithm', 'actual_revr', 'predicted_revr']].head())
+        else:
+            print("⚠️ No predictions to save")
+    
     def save_results(self):
         """Save detailed results to CSV files"""
         print(f"\n💾 SAVING RESULTS")
         print("="*30)
         
         if len(self.results) > 0:
+            # Create output directory
+            import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            output_dir = os.path.join(script_dir, 'output_files')
+            os.makedirs(output_dir, exist_ok=True)
+            
             # Save detailed results
-            results_path = 'output_files/enhanced_algorithm_results.csv'
+            results_path = os.path.join(output_dir, 'enhanced_algorithm_results.csv')
             self.results.to_csv(results_path, index=False)
             print(f"✅ Detailed results saved: {results_path}")
             
@@ -633,16 +831,16 @@ class EnhancedAlgorithmComparison:
                     summary_stats[f'{algo_name}_std_rmse'] = self.results[rmse_col].std()
             
             summary_df = pd.DataFrame([summary_stats])
-            summary_path = 'output_files/enhanced_algorithm_summary.csv'
+            summary_path = os.path.join(output_dir, 'enhanced_algorithm_summary.csv')
             summary_df.to_csv(summary_path, index=False)
             print(f"✅ Summary statistics saved: {summary_path}")
         
         print("\n🎉 ENHANCED ALGORITHM COMPARISON COMPLETED!")
         print(f"Key outputs:")
         print(f"  • enhanced_algorithm_comparison.png - Main comparison")
-        print(f"  • enhanced_algorithm_time_series.png - Focused time series")
         print(f"  • enhanced_algorithm_results.csv - Detailed results")
         print(f"  • enhanced_algorithm_summary.csv - Summary statistics")
+        print(f"  • enhanced_7_features_predictions.csv - Detailed predictions")
 
 def main():
     """
@@ -651,8 +849,9 @@ def main():
     try:
         print("🚀 ENHANCED ALGORITHM COMPARISON FOR REVR PREDICTION")
         print("="*80)
-        print("Features: IEVR + normative_iv_rv_ratio + SKEW + KURT + IV_RATIO + SMIRK + vol_hl7 + vol_hl10 + vol_hl21 + z_score_momentum")
-        print("Algorithms: Linear Regression, Random Forest, XGBoost")
+        print("Features: IEVR + normative_iv_rv_ratio + IV_RATIO + SMIRK + vol_hl21 + z_score_momentum + dispersion_pct_ibes")
+        algorithms_list = "Linear Regression, Random Forest, XGBoost, Baseline (4-Avg)"
+        print(f"Algorithms: {algorithms_list}")
         print("Methodology: 5-Year Training, 6-Month Validation, 6-Month Testing Rolling Windows")
         print("="*80)
         
@@ -663,6 +862,9 @@ def main():
         if not analyzer.load_data():
             return
         
+        # Create baseline features
+        analyzer.create_baseline_features()
+        
         # Run rolling window comparison
         results = analyzer.run_rolling_comparison()
         
@@ -672,6 +874,9 @@ def main():
             
             # Save results
             analyzer.save_results()
+            
+            # Save predictions
+            analyzer.save_predictions()
         else:
             print("❌ No results generated")
             

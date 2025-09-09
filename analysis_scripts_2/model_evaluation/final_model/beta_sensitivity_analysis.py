@@ -2,7 +2,7 @@
 """
 Beta Sensitivity Analysis for Multifactor Linear Regression
 Analyze the stability and sensitivity of regression coefficients over rolling windows
-Features: IEVR + normative_iv_rv_ratio + SKEW + KURT + IV_RATIO + SMIRK + vol_hl7 + vol_hl10 + vol_hl21 + z_score_momentum
+Features: IEVR + normative_iv_rv_ratio + IV_RATIO + SMIRK + vol_hl21 + z_score_momentum + dispersion_pct_ibes
 """
 
 import pandas as pd
@@ -22,8 +22,8 @@ class BetaSensitivityAnalysis:
     def __init__(self):
         self.df = None
         self.features = [
-            'ievr', 'normative_iv_rv_ratio', 'SKEW', 'KURT', 'IV_RATIO', 
-            'SMIRK', 'vol_hl7', 'vol_hl10', 'vol_hl21', 'z_score_momentum'
+            'ievr', 'normative_iv_rv_ratio', 'IV_RATIO', 
+            'SMIRK', 'vol_hl21', 'z_score_momentum', 'dispersion_pct_ibes'
         ]
         self.target = 'revr'
         self.beta_results = []
@@ -35,14 +35,24 @@ class BetaSensitivityAnalysis:
         print("="*60)
         
         try:
-            # Try momentum dataset first
+            # Use absolute paths to avoid directory issues
+            import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            data_dir = os.path.join(script_dir, '..', '..', 'data_files')
+            
+            # Try model_df dataset first (same as algorithm comparison)
             try:
-                self.df = pd.read_csv('data_files/final_merged_dataset_with_momentum_final.csv')
-                print(f"✅ Loaded momentum dataset: {len(self.df):,} observations")
+                self.df = pd.read_csv(os.path.join(data_dir, 'model_df.csv'))
+                print(f"✅ Loaded model_df dataset: {len(self.df):,} observations")
             except FileNotFoundError:
-                # Fallback to main dataset
-                self.df = pd.read_csv('data_files/final_merged_dataset.csv')
-                print(f"✅ Loaded main dataset: {len(self.df):,} observations")
+                # Fallback to updated momentum dataset
+                try:
+                    self.df = pd.read_csv(os.path.join(data_dir, 'final_merged_dataset_with_momentum_updated.csv'))
+                    print(f"✅ Loaded updated momentum dataset: {len(self.df):,} observations")
+                except FileNotFoundError:
+                    # Final fallback to original momentum dataset
+                    self.df = pd.read_csv(os.path.join(data_dir, 'final_merged_dataset_with_momentum_final.csv'))
+                    print(f"✅ Loaded original momentum dataset: {len(self.df):,} observations")
             
             # Convert earnings_date to datetime
             self.df['earnings_date'] = pd.to_datetime(self.df['earnings_date'])
@@ -361,7 +371,7 @@ class BetaSensitivityAnalysis:
         
         # Plot 1: Key Economic Features
         ax1 = axes[0, 0]
-        key_features = ['ievr', 'normative_iv_rv_ratio', 'z_score_momentum']
+        key_features = ['ievr', 'normative_iv_rv_ratio']
         for i, feature in enumerate(key_features):
             beta_col = f'beta_{feature}'
             if beta_col in self.beta_results.columns:
@@ -405,15 +415,20 @@ class BetaSensitivityAnalysis:
         ax3.legend(fontsize=8)
         ax3.axhline(y=0, color='#8C8C8C', linestyle='-', alpha=0.5)
         
-        # Plot 4: Model Performance
+        # Plot 4: Momentum Features
         ax4 = axes[1, 1]
-        ax4.plot(x_axis, self.beta_results['test_r2'], 
-                color='#003366', linewidth=3, marker='o', markersize=6, 
-                label='Test R²', markeredgecolor='white', markeredgewidth=0.5)
+        momentum_features = ['z_score_momentum', 'dispersion_pct_ibes']
+        for i, feature in enumerate(momentum_features):
+            beta_col = f'beta_{feature}'
+            if beta_col in self.beta_results.columns:
+                ax4.plot(x_axis, self.beta_results[beta_col], 
+                        label=feature.replace('_', ' ').title(), 
+                        color=colors[(i+8) % len(colors)], linewidth=2, marker='d', markersize=4)
         
-        ax4.set_title('Model Performance', fontweight='bold', color='#003366')
+        ax4.set_title('Momentum Features', fontweight='bold', color='#003366')
         ax4.set_xlabel(x_label, color='#003366', fontweight='semibold')
-        ax4.set_ylabel('Test R²', color='#003366', fontweight='semibold')
+        ax4.set_ylabel('Beta Coefficient', color='#003366', fontweight='semibold')
+        ax4.legend(fontsize=8)
         ax4.axhline(y=0, color='#8C8C8C', linestyle='-', alpha=0.5)
         
         # Highlight 2018 market stress
@@ -425,7 +440,12 @@ class BetaSensitivityAnalysis:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/beta_sensitivity_time_series.png'
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'beta_sensitivity_time_series.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Beta time series plot saved: {output_path}")
         
@@ -479,7 +499,12 @@ class BetaSensitivityAnalysis:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/beta_sensitivity_distributions.png'
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'beta_sensitivity_distributions.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Beta distribution plot saved: {output_path}")
         
@@ -556,7 +581,12 @@ class BetaSensitivityAnalysis:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/beta_sensitivity_heatmap.png'
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'beta_sensitivity_heatmap.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Beta stability heatmap saved: {output_path}")
         
@@ -653,12 +683,17 @@ class BetaSensitivityAnalysis:
         plt.tight_layout()
         
         # Save focused plot
-        output_path = 'output_files/beta_sensitivity_focused.png'
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'beta_sensitivity_focused.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Focused beta plot saved: {output_path}")
         
         # Save SVG version
-        output_path_svg = 'output_files/beta_sensitivity_focused.svg'
+        output_path_svg = os.path.join(output_dir, 'beta_sensitivity_focused.svg')
         plt.savefig(output_path_svg, format='svg', bbox_inches='tight', facecolor='white')
         print(f"✅ SVG version saved: {output_path_svg}")
         
@@ -670,8 +705,14 @@ class BetaSensitivityAnalysis:
         print("="*40)
         
         if len(self.beta_results) > 0:
+            # Create output directory
+            import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            output_dir = os.path.join(script_dir, 'output_files')
+            os.makedirs(output_dir, exist_ok=True)
+            
             # Save detailed results
-            results_path = 'output_files/beta_sensitivity_results.csv'
+            results_path = os.path.join(output_dir, 'beta_sensitivity_results.csv')
             self.beta_results.to_csv(results_path, index=False)
             print(f"✅ Detailed results saved: {results_path}")
             
@@ -689,7 +730,7 @@ class BetaSensitivityAnalysis:
                     summary_stats[f'{feature}_cv'] = np.std(betas) / abs(np.mean(betas)) if np.mean(betas) != 0 else np.inf
             
             summary_df = pd.DataFrame([summary_stats])
-            summary_path = 'output_files/beta_sensitivity_summary.csv'
+            summary_path = os.path.join(output_dir, 'beta_sensitivity_summary.csv')
             summary_df.to_csv(summary_path, index=False)
             print(f"✅ Summary statistics saved: {summary_path}")
         
@@ -709,7 +750,7 @@ def main():
     try:
         print("🚀 BETA SENSITIVITY ANALYSIS FOR MULTIFACTOR LINEAR REGRESSION")
         print("="*80)
-        print("Features: IEVR + normative_iv_rv_ratio + SKEW + KURT + IV_RATIO + SMIRK + vol_hl7 + vol_hl10 + vol_hl21 + z_score_momentum")
+        print("Features: IEVR + normative_iv_rv_ratio + IV_RATIO + SMIRK + vol_hl21 + z_score_momentum + dispersion_pct_ibes")
         print("Methodology: 5-Year Training, 6-Month Testing Rolling Windows")
         print("="*80)
         

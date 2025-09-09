@@ -3,6 +3,7 @@
 Beta Statistical Significance Analysis
 Enhanced analysis including p-values, t-statistics, and confidence intervals
 for the multifactor linear regression coefficients
+Features: IEVR + normative_iv_rv_ratio + IV_RATIO + SMIRK + vol_hl7 + vol_hl21 + z_score_momentum
 """
 
 import pandas as pd
@@ -23,8 +24,8 @@ class BetaStatisticalSignificance:
     def __init__(self):
         self.df = None
         self.features = [
-            'ievr', 'normative_iv_rv_ratio', 'SKEW', 'KURT', 'IV_RATIO', 
-            'SMIRK', 'vol_hl7', 'vol_hl10', 'vol_hl21', 'z_score_momentum'
+            'ievr', 'normative_iv_rv_ratio', 'IV_RATIO', 
+            'SMIRK', 'vol_hl21', 'z_score_momentum', 'dispersion_pct_ibes'
         ]
         self.target = 'revr'
         self.statistical_results = []
@@ -36,14 +37,24 @@ class BetaStatisticalSignificance:
         print("="*65)
         
         try:
-            # Try momentum dataset first
+            # Use absolute paths to avoid directory issues
+            import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            data_dir = os.path.join(script_dir, '..', '..', 'data_files')
+            
+            # Try model_df dataset first (same as algorithm comparison)
             try:
-                self.df = pd.read_csv('data_files/final_merged_dataset_with_momentum_final.csv')
-                print(f"✅ Loaded momentum dataset: {len(self.df):,} observations")
+                self.df = pd.read_csv(os.path.join(data_dir, 'model_df.csv'))
+                print(f"✅ Loaded model_df dataset: {len(self.df):,} observations")
             except FileNotFoundError:
-                # Fallback to main dataset
-                self.df = pd.read_csv('data_files/final_merged_dataset.csv')
-                print(f"✅ Loaded main dataset: {len(self.df):,} observations")
+                # Fallback to updated momentum dataset
+                try:
+                    self.df = pd.read_csv(os.path.join(data_dir, 'final_merged_dataset_with_momentum_updated.csv'))
+                    print(f"✅ Loaded updated momentum dataset: {len(self.df):,} observations")
+                except FileNotFoundError:
+                    # Final fallback to original momentum dataset
+                    self.df = pd.read_csv(os.path.join(data_dir, 'final_merged_dataset_with_momentum_final.csv'))
+                    print(f"✅ Loaded original momentum dataset: {len(self.df):,} observations")
             
             # Convert earnings_date to datetime
             self.df['earnings_date'] = pd.to_datetime(self.df['earnings_date'])
@@ -467,9 +478,9 @@ class BetaStatisticalSignificance:
         # Key features for different subplots
         feature_groups = [
             ['ievr', 'normative_iv_rv_ratio', 'z_score_momentum'],
-            ['SKEW', 'KURT', 'IV_RATIO', 'SMIRK'],
-            ['vol_hl7', 'vol_hl10', 'vol_hl21'],
-            ['ievr', 'normative_iv_rv_ratio']  # Combined key features
+            ['IV_RATIO', 'SMIRK', 'dispersion_pct_ibes'],
+            ['vol_hl21'],
+            ['ievr', 'normative_iv_rv_ratio', 'dispersion_pct_ibes']  # Combined key features
         ]
         
         titles = ['Key Economic Features', 'Option Features', 'Volatility Features', 'Core Features (Detailed)']
@@ -503,7 +514,12 @@ class BetaStatisticalSignificance:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/statistical_significance_pvalues.png'
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'statistical_significance_pvalues.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ P-value time series plot saved: {output_path}")
         
@@ -591,7 +607,12 @@ class BetaStatisticalSignificance:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/statistical_significance_heatmap.png'
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'statistical_significance_heatmap.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Significance heatmap saved: {output_path}")
         
@@ -599,13 +620,13 @@ class BetaStatisticalSignificance:
     
     def _create_confidence_interval_plot(self):
         """Create confidence interval plot for key features"""
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig, axes = plt.subplots(3, 2, figsize=(16, 18))
         fig.patch.set_facecolor('white')
         fig.suptitle('95% Confidence Intervals for Key Features\nMultifactor Linear Regression Coefficients', 
                      fontsize=14, fontweight='bold', color='#003366')
         
         # Key features to plot
-        key_features = ['ievr', 'normative_iv_rv_ratio', 'z_score_momentum', 'vol_hl10']
+        key_features = ['ievr', 'normative_iv_rv_ratio', 'z_score_momentum', 'vol_hl21', 'dispersion_pct_ibes']
         
         # Get test start dates for x-axis
         if 'test_start' in self.statistical_results.columns:
@@ -658,8 +679,11 @@ class BetaStatisticalSignificance:
                 ax.set_title(f'{feature.replace("_", " ").title()}', fontweight='bold', color='#003366')
                 ax.set_ylabel('Coefficient Value', color='#003366', fontweight='semibold')
                 
-                if idx >= 2:  # Bottom row
+                if idx >= 4:  # Bottom row (adjusted for 3x2 grid)
                     ax.set_xlabel(x_label, color='#003366', fontweight='semibold')
+        
+        # Hide the unused 6th subplot
+        axes[2, 1].set_visible(False)
         
         # Add legend
         legend_elements = [
@@ -674,7 +698,12 @@ class BetaStatisticalSignificance:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/statistical_significance_confidence_intervals.png'
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'statistical_significance_confidence_intervals.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Confidence interval plot saved: {output_path}")
         
@@ -775,7 +804,12 @@ class BetaStatisticalSignificance:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/statistical_significance_summary_table.png'
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'statistical_significance_summary_table.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Summary table plot saved: {output_path}")
         
@@ -787,8 +821,14 @@ class BetaStatisticalSignificance:
         print("="*45)
         
         if len(self.statistical_results) > 0:
+            # Create output directory
+            import os
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            output_dir = os.path.join(script_dir, 'output_files')
+            os.makedirs(output_dir, exist_ok=True)
+            
             # Save detailed results
-            results_path = 'output_files/statistical_significance_results.csv'
+            results_path = os.path.join(output_dir, 'statistical_significance_results.csv')
             self.statistical_results.to_csv(results_path, index=False)
             print(f"✅ Detailed results saved: {results_path}")
             
@@ -821,7 +861,7 @@ class BetaStatisticalSignificance:
                         })
             
             summary_df = pd.DataFrame(summary_table)
-            summary_path = 'output_files/statistical_significance_summary.csv'
+            summary_path = os.path.join(output_dir, 'statistical_significance_summary.csv')
             summary_df.to_csv(summary_path, index=False)
             print(f"✅ Summary table saved: {summary_path}")
         
@@ -841,7 +881,7 @@ def main():
     try:
         print("🚀 STATISTICAL SIGNIFICANCE ANALYSIS FOR MULTIFACTOR LINEAR REGRESSION")
         print("="*85)
-        print("Features: IEVR + normative_iv_rv_ratio + SKEW + KURT + IV_RATIO + SMIRK + vol_hl7 + vol_hl10 + vol_hl21 + z_score_momentum")
+        print("Features: IEVR + normative_iv_rv_ratio + IV_RATIO + SMIRK + vol_hl21 + z_score_momentum + dispersion_pct_ibes")
         print("Analysis: P-values, t-statistics, confidence intervals, significance testing")
         print("="*85)
         

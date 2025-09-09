@@ -7,7 +7,10 @@ the sophisticated IEVR/REVR model to demonstrate the value of forward-looking fe
 
 import pandas as pd
 import numpy as np
+import os
 from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -19,7 +22,7 @@ class BenchmarkAnalysis:
     Comprehensive benchmark analysis comparing simple historical average vs IEVR/REVR model
     """
     
-    def __init__(self, data_file_path='data_files/final_merged_dataset_with_momentum_final.csv'):
+    def __init__(self, data_file_path=None):
         """
         Initialize the benchmark analysis
         """
@@ -28,15 +31,39 @@ class BenchmarkAnalysis:
         print("Comparing Simple Historical Average vs IEVR/REVR Model")
         print("="*80)
         
+        # Determine data file path
+        if data_file_path is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            data_dir = os.path.join(script_dir, '..', 'data_files')
+            data_file_path = os.path.join(data_dir, 'model_df.csv')
+        
         # Load data
+        if not os.path.exists(data_file_path):
+            raise FileNotFoundError(f"❌ Dataset file not found: {data_file_path}")
+        
         self.df = pd.read_csv(data_file_path)
         self.df['earnings_date'] = pd.to_datetime(self.df['earnings_date'])
         self.df['year'] = self.df['earnings_date'].dt.year
         self.df['quarter'] = self.df['earnings_date'].dt.quarter
         
         # Create normative IV/RV ratio
-        self.df['normative_iv_rv_ratio'] = self.df['avg_pre'] / self.df['normative_realized_vol']
-        self.df['normative_iv_rv_ratio'] = self.df['normative_iv_rv_ratio'].replace([np.inf, -np.inf], np.nan)
+        if 'normative_iv_rv_ratio' not in self.df.columns:
+            if 'avg_pre' in self.df.columns and 'normative_realized_vol' in self.df.columns:
+                print("🔧 Calculating normative_iv_rv_ratio...")
+                self.df['normative_iv_rv_ratio'] = self.df['avg_pre'] / self.df['normative_realized_vol']
+                self.df['normative_iv_rv_ratio'] = self.df['normative_iv_rv_ratio'].replace([np.inf, -np.inf], np.nan)
+                print(f"✅ Created normative_iv_rv_ratio from avg_pre / normative_realized_vol")
+            else:
+                print("❌ Cannot calculate normative_iv_rv_ratio - missing avg_pre or normative_realized_vol")
+        
+        # Add z_score_momentum if missing
+        if 'z_score_momentum' not in self.df.columns:
+            print("🔧 Creating simple z_score_momentum feature...")
+            self.df = self.df.sort_values(['ticker', 'earnings_date'])
+            # Simple momentum calculation
+            self.df['momentum_3m'] = self.df.groupby('ticker')['revr'].rolling(window=3, min_periods=2).mean().reset_index(0, drop=True).shift(1)
+            self.df['z_score_momentum'] = self.df.groupby('ticker')['momentum_3m'].transform(lambda x: (x - x.mean()) / x.std()).fillna(0)
+            print(f"✅ Created z_score_momentum feature")
         
         print(f"✅ Loaded dataset: {len(self.df):,} observations")
         print(f"📅 Date range: {self.df['year'].min()} - {self.df['year'].max()}")
@@ -183,21 +210,24 @@ class BenchmarkAnalysis:
                     'name': 'Benchmark:\nAvg Last 4 REVR',
                     'color': '#8C8C8C',
                     'linestyle': '--',
-                    'marker': 'o'
+                    'marker': 'o',
+                    'model_type': 'benchmark'
                 },
                 'Simple_IEVR': {
                     'features': ['ievr'],
                     'name': 'Simple:\nREVR ~ IEVR',
                     'color': '#66CCFF',
                     'linestyle': '-',
-                    'marker': 's'
+                    'marker': 's',
+                    'model_type': 'linear'
                 },
                 'Multi_Factor': {
-                    'features': ['ievr', 'normative_iv_rv_ratio', 'SKEW', 'KURT', 'IV_RATIO', 'SMIRK', 'vol_hl7', 'vol_hl10', 'vol_hl21', 'z_score_momentum'],
-                    'name': 'Multi-Factor:\nREVR ~ IEVR + Features',
+                    'features': ['ievr', 'normative_iv_rv_ratio', 'IV_RATIO', 'SMIRK', 'vol_hl21', 'z_score_momentum', 'dispersion_pct_ibes'],
+                    'name': 'Enhanced 7-Feature:\nRandom Forest',
                     'color': '#003366',
                     'linestyle': '-',
-                    'marker': '^'
+                    'marker': '^',
+                    'model_type': 'random_forest'
                 }
             }
             
@@ -207,7 +237,8 @@ class BenchmarkAnalysis:
                     result = self._evaluate_model(
                         train_data, test_data, 
                         model_config['features'], 
-                        model_name
+                        model_name,
+                        model_config.get('model_type', 'linear')
                     )
                     
                     window_results[f'{model_name}_r2'] = result['test_r2']
@@ -235,9 +266,9 @@ class BenchmarkAnalysis:
         
         return self.yearly_results
         
-    def _evaluate_model(self, train_data, test_data, features, model_name):
+    def _evaluate_model(self, train_data, test_data, features, model_name, model_type='linear'):
         """
-        Evaluate a single model configuration
+        Evaluate a single model configuration with support for different model types
         """
         # Prepare training data
         train_features = train_data[features + ['revr']].dropna()
@@ -257,15 +288,33 @@ class BenchmarkAnalysis:
         X_test = test_features[features].values
         y_test = test_features['revr'].values
         
-        # Handle benchmark models (no fitting required)
-        if len(features) == 1 and 'benchmark' in features[0]:
+        # Handle different model types
+        if model_type == 'benchmark':
             # For benchmark models, prediction is just the feature value
             y_pred = X_test.flatten()
-        else:
-            # For IEVR/REVR models, fit linear regression
+        elif model_type == 'linear':
+            # For linear regression models
             model = LinearRegression()
             model.fit(X_train, y_train)
             y_pred = model.predict(X_test)
+        elif model_type == 'random_forest':
+            # For Random Forest models with scaling
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            
+            model = RandomForestRegressor(
+                n_estimators=100,
+                max_depth=10,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                random_state=42,
+                n_jobs=-1
+            )
+            model.fit(X_train_scaled, y_train)
+            y_pred = model.predict(X_test_scaled)
+        else:
+            raise ValueError(f"Unknown model type: {model_type}")
         
         # Calculate metrics
         test_r2 = r2_score(y_test, y_pred)
@@ -486,7 +535,11 @@ class BenchmarkAnalysis:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/benchmark_comparison_analysis.png'
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, '..', 'output_files', 'benchmark_analysis')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'benchmark_comparison_analysis.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Benchmark visualization saved: {output_path}")
         
@@ -509,7 +562,9 @@ class BenchmarkAnalysis:
         for model_name, model_config in self.models.items():
             r2_col = f'{model_name}_r2'
             if r2_col in self.yearly_results.columns:
-                ax.plot(x_axis, self.yearly_results[r2_col], 
+                # Convert R² to percentage
+                r2_percentage = self.yearly_results[r2_col] * 100
+                ax.plot(x_axis, r2_percentage, 
                        label=model_config['name'], 
                        color=model_config['color'], 
                        linestyle=model_config.get('linestyle', '-'),
@@ -517,7 +572,7 @@ class BenchmarkAnalysis:
                        markersize=6, linewidth=2, alpha=0.8)
         
         ax.set_xlabel(x_label)
-        ax.set_ylabel('Test R²')
+        ax.set_ylabel('Test R² (%)')
         ax.set_title('Model Performance Over Time')
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -525,7 +580,7 @@ class BenchmarkAnalysis:
         # Highlight 2018 underperformance if using datetime x-axis
         if 'test_start' in self.yearly_results.columns:
             ax.axvspan(pd.Timestamp('2018-01-01'), pd.Timestamp('2018-12-31'), alpha=0.3, color='orange')
-            ax.text(pd.Timestamp('2018-06-15'), ax.get_ylim()[1]*0.9, '2018\nIssue', ha='center', va='top', 
+            ax.text(pd.Timestamp('2018-06-15'), ax.get_ylim()[1]*0.9, '2018\nVolmageddon', ha='center', va='top', 
                     fontsize=10, color='darkorange', fontweight='bold')
         elif 'window_id' in self.yearly_results.columns:
             # Find 2018 windows
@@ -534,7 +589,7 @@ class BenchmarkAnalysis:
                 min_window = windows_2018.min() - 0.5
                 max_window = windows_2018.max() + 0.5
                 ax.axvspan(min_window, max_window, alpha=0.3, color='orange')
-                ax.text((min_window + max_window) / 2, ax.get_ylim()[1]*0.9, '2018\nIssue', ha='center', va='top', 
+                ax.text((min_window + max_window) / 2, ax.get_ylim()[1]*0.9, '2018\nVolmageddon', ha='center', va='top', 
                         fontsize=10, color='darkorange', fontweight='bold')
     
     def _plot_average_performance(self, ax):
@@ -557,8 +612,9 @@ class BenchmarkAnalysis:
         
         for model_name, perf in self.model_performance.items():
             model_names.append(perf['name'])
-            avg_r2_values.append(perf['avg_r2'])
-            std_r2_values.append(perf['std_r2'])
+            # Convert R² to percentage
+            avg_r2_values.append(perf['avg_r2'] * 100)
+            std_r2_values.append(perf['std_r2'] * 100)
             colors.append(color_map.get(model_name, 'gray'))
         
         bars = ax.bar(range(len(model_names)), avg_r2_values, 
@@ -567,15 +623,15 @@ class BenchmarkAnalysis:
         
         ax.set_xticks(range(len(model_names)))
         ax.set_xticklabels(model_names, rotation=45, ha='right')
-        ax.set_ylabel('Average R²')
+        ax.set_ylabel('Average R² (%)')
         ax.set_title('Average Performance Comparison')
         ax.grid(True, alpha=0.3, axis='y')
         
         # Add value labels on bars
         for bar, value in zip(bars, avg_r2_values):
             height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height + 0.001,
-                   f'{value:.3f}', ha='center', va='bottom', fontsize=9)
+            ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                   f'{value:.1f}%', ha='center', va='bottom', fontsize=9)
     
     def _plot_performance_distribution(self, ax):
         """Plot distribution of R² values"""
@@ -593,8 +649,10 @@ class BenchmarkAnalysis:
                     labels.append(self.models[model_name]['name'])
         
         if distributions:
-            ax.boxplot(distributions, labels=labels)
-            ax.set_ylabel('R² Distribution')
+            # Convert distributions to percentages
+            distributions_pct = [dist * 100 for dist in distributions]
+            ax.boxplot(distributions_pct, labels=labels)
+            ax.set_ylabel('R² Distribution (%)')
             ax.set_title('Performance Distribution')
             ax.grid(True, alpha=0.3, axis='y')
     
@@ -611,7 +669,8 @@ class BenchmarkAnalysis:
             r2_col = f'{model_name}_r2'
             if r2_col in self.yearly_results.columns:
                 model_r2 = self.yearly_results[r2_col]
-                improvement = model_r2 - benchmark_r2
+                # Convert improvement to percentage points
+                improvement = (model_r2 - benchmark_r2) * 100
                 
                 ax.plot(self.yearly_results['year'], improvement, 
                        label=f'{self.models[model_name]["name"]} vs Benchmark',
@@ -619,7 +678,7 @@ class BenchmarkAnalysis:
         
         ax.axhline(y=0, color='red', linestyle='--', alpha=0.5, label='No Improvement')
         ax.set_xlabel('Year')
-        ax.set_ylabel('R² Improvement over Benchmark')
+        ax.set_ylabel('R² Improvement over Benchmark (pp)')
         ax.set_title('Improvement Over 4-Period Average')
         ax.legend()
         ax.grid(True, alpha=0.3)
@@ -688,7 +747,9 @@ class BenchmarkAnalysis:
         for model_name, model_config in self.models.items():
             r2_col = f'{model_name}_r2'
             if r2_col in self.yearly_results.columns:
-                ax1.plot(x_axis, self.yearly_results[r2_col], 
+                # Convert R² to percentage
+                r2_percentage = self.yearly_results[r2_col] * 100
+                ax1.plot(x_axis, r2_percentage, 
                         label=model_config['name'], 
                         color=model_config['color'], 
                         linestyle=model_config.get('linestyle', '-'),
@@ -697,19 +758,19 @@ class BenchmarkAnalysis:
                         markeredgecolor='white')
         
         ax1.set_xlabel(x_label, fontsize=12, color='#003366', fontweight='semibold')
-        ax1.set_ylabel('Test R²', fontsize=12, color='#003366', fontweight='semibold')
+        ax1.set_ylabel('Test R² (%)', fontsize=12, color='#003366', fontweight='semibold')
         ax1.set_title('Model Performance Comparison Over Time', 
                      fontsize=14, fontweight='bold', color='#003366', pad=20)
         ax1.legend(fontsize=10, loc='upper left', frameon=True, fancybox=True, 
                   shadow=True, framealpha=0.95)
         ax1.grid(True, alpha=0.3)
-        ax1.set_ylim(bottom=-0.2, top=0.3)
+        ax1.set_ylim(bottom=-20, top=30)
         
         # Highlight 2018 with BlackRock accent color
         if 'test_start' in self.yearly_results.columns:
             ax1.axvspan(pd.Timestamp('2018-01-01'), pd.Timestamp('2018-12-31'), 
-                       alpha=0.2, color='#FF6633', label='2018 Market Stress')
-            ax1.text(pd.Timestamp('2018-06-15'), ax1.get_ylim()[1]*0.85, '2018\nMarket Stress', 
+                       alpha=0.2, color='#FF6633', label='2018 Volmageddon')
+            ax1.text(pd.Timestamp('2018-06-15'), ax1.get_ylim()[1]*0.85, '2018\nVolmageddon', 
                     ha='center', va='top', fontsize=10, color='#FF6633', fontweight='bold')
         elif 'window_id' in self.yearly_results.columns:
             # Find 2018 windows
@@ -717,13 +778,13 @@ class BenchmarkAnalysis:
             if len(windows_2018) > 0:
                 min_window = windows_2018.min() - 0.5
                 max_window = windows_2018.max() + 0.5
-                ax1.axvspan(min_window, max_window, alpha=0.2, color='#FF6633', label='2018 Market Stress')
-                ax1.text((min_window + max_window) / 2, ax1.get_ylim()[1]*0.85, '2018\nMarket Stress', 
+                ax1.axvspan(min_window, max_window, alpha=0.2, color='#FF6633', label='2018 Volmageddon')
+                ax1.text((min_window + max_window) / 2, ax1.get_ylim()[1]*0.85, '2018\nVolmageddon', 
                         ha='center', va='top', fontsize=10, color='#FF6633', fontweight='bold')
         else:
             # Fallback for year-based x-axis
-            ax1.axvspan(2017.5, 2018.5, alpha=0.2, color='#FF6633', label='2018 Market Stress')
-            ax1.text(2018, ax1.get_ylim()[1]*0.85, '2018\nMarket Stress', ha='center', va='top', 
+            ax1.axvspan(2017.5, 2018.5, alpha=0.2, color='#FF6633', label='2018 Volmageddon')
+            ax1.text(2018, ax1.get_ylim()[1]*0.85, '2018\nVolmageddon', ha='center', va='top', 
                     fontsize=10, color='#FF6633', fontweight='bold')
         
         # Add horizontal line at 0 with better styling
@@ -744,7 +805,8 @@ class BenchmarkAnalysis:
                 if model_name in self.model_performance:
                     perf = self.model_performance[model_name]
                     model_names.append(self.models[model_name]['name'])
-                    performances.append(perf['avg_r2'])
+                    # Convert R² to percentage
+                    performances.append(perf['avg_r2'] * 100)
                     colors.append(self.models[model_name]['color'])
             
             if model_names:
@@ -756,9 +818,9 @@ class BenchmarkAnalysis:
                 # Add value labels on bars with better styling
                 for i, (bar, value) in enumerate(zip(bars, performances)):
                     height = bar.get_height()
-                    label_y = height + 0.008 if height >= 0 else height - 0.020
+                    label_y = height + 0.8 if height >= 0 else height - 2.0
                     ax2.text(bar.get_x() + bar.get_width()/2., label_y,
-                            f'{value:.3f}', ha='center', 
+                            f'{value:.1f}%', ha='center', 
                             va='bottom' if height >= 0 else 'top',
                             fontsize=11, fontweight='bold', color='#003366')
                 
@@ -773,8 +835,8 @@ class BenchmarkAnalysis:
                         final_improvement = multi_r2 - simple_r2
                         
                         # Arrow from benchmark to simple with BlackRock light blue
-                        ax2.annotate(f'+{simple_improvement:.3f}', 
-                                   xy=(1, simple_r2), xytext=(0.5, simple_r2 + 0.06),
+                        ax2.annotate(f'+{simple_improvement:.1f}pp', 
+                                   xy=(1, simple_r2), xytext=(0.5, simple_r2 + 6),
                                    arrowprops=dict(arrowstyle='->', color='#66CCFF', lw=2),
                                    fontsize=10, ha='center', va='bottom',
                                    color='#66CCFF', fontweight='bold',
@@ -782,8 +844,8 @@ class BenchmarkAnalysis:
                                            edgecolor='#66CCFF', alpha=0.9))
                         
                         # Arrow from simple to multi-factor with BlackRock dark blue
-                        ax2.annotate(f'+{final_improvement:.3f}', 
-                                   xy=(2, multi_r2), xytext=(1.5, multi_r2 + 0.06),
+                        ax2.annotate(f'+{final_improvement:.1f}pp', 
+                                   xy=(2, multi_r2), xytext=(1.5, multi_r2 + 6),
                                    arrowprops=dict(arrowstyle='->', color='#003366', lw=2),
                                    fontsize=10, ha='center', va='bottom',
                                    color='#003366', fontweight='bold',
@@ -792,31 +854,35 @@ class BenchmarkAnalysis:
                 
                 ax2.set_xticks(range(len(model_names)))
                 ax2.set_xticklabels(model_names, fontsize=10, color='#003366')
-                ax2.set_ylabel('Average Test R²', fontsize=12, color='#003366', fontweight='semibold')
+                ax2.set_ylabel('Average Test R² (%)', fontsize=12, color='#003366', fontweight='semibold')
                 ax2.set_title('Average Performance Comparison', fontsize=14, fontweight='bold', 
                              color='#003366', pad=20)
                 ax2.grid(True, alpha=0.3, axis='y')
                 
                 # Set y-limits to show the progression clearly
-                y_min = min(performances) - 0.06
-                y_max = max(performances) + 0.12
+                y_min = min(performances) - 6
+                y_max = max(performances) + 12
                 ax2.set_ylim(y_min, y_max)
                 
                 # Add horizontal line at 0 with BlackRock styling
                 ax2.axhline(y=0, color='#8C8C8C', linestyle='-', alpha=0.7, linewidth=1.5)
-                ax2.text(ax2.get_xlim()[0] + 0.05, 0.008, 'No Predictive Power', 
+                ax2.text(ax2.get_xlim()[0] + 0.05, 0.8, 'No Predictive Power', 
                         fontsize=9, color='#8C8C8C', alpha=0.8, style='italic')
         
         plt.tight_layout()
         
         # Save focused plot with high quality for presentations
-        output_path = 'output_files/benchmark_focused_comparison.png'
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, '..', 'output_files', 'benchmark_analysis')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'benchmark_focused_comparison.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', 
                    edgecolor='none', format='png')
         print(f"✅ Focused comparison plot saved: {output_path}")
         
         # Also save as SVG for perfect scaling in presentations
-        output_path_svg = 'output_files/benchmark_focused_comparison.svg'
+        output_path_svg = os.path.join(output_dir, 'benchmark_focused_comparison.svg')
         plt.savefig(output_path_svg, bbox_inches='tight', facecolor='white', 
                    edgecolor='none', format='svg')
         print(f"✅ SVG version saved: {output_path_svg}")
@@ -826,9 +892,14 @@ class BenchmarkAnalysis:
         print(f"\n💾 SAVING BENCHMARK RESULTS")
         print("-" * 40)
         
+        # Ensure output directory exists
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, '..', 'output_files', 'benchmark_analysis')
+        os.makedirs(output_dir, exist_ok=True)
+        
         # Save yearly results
         if hasattr(self, 'yearly_results'):
-            yearly_path = 'output_files/benchmark_yearly_results.csv'
+            yearly_path = os.path.join(output_dir, 'benchmark_yearly_results.csv')
             self.yearly_results.to_csv(yearly_path, index=False)
             print(f"✅ Yearly results saved: {yearly_path}")
         
@@ -845,7 +916,7 @@ class BenchmarkAnalysis:
                 })
             
             summary_df = pd.DataFrame(summary_data)
-            summary_path = 'output_files/benchmark_model_summary.csv'
+            summary_path = os.path.join(output_dir, 'benchmark_model_summary.csv')
             summary_df.to_csv(summary_path, index=False)
             print(f"✅ Model summary saved: {summary_path}")
         

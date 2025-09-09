@@ -7,6 +7,7 @@ using rolling window methodology
 
 import pandas as pd
 import numpy as np
+import os
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score, mean_squared_error
 import matplotlib.pyplot as plt
@@ -32,8 +33,8 @@ class TreeModelsFeatureImportance:
     def __init__(self):
         self.df = None
         self.features = [
-            'ievr', 'normative_iv_rv_ratio', 'SKEW', 'KURT', 'IV_RATIO', 
-            'SMIRK', 'vol_hl7', 'vol_hl10', 'vol_hl21', 'z_score_momentum'
+            'ievr', 'normative_iv_rv_ratio', 'IV_RATIO', 
+            'SMIRK', 'vol_hl21', 'z_score_momentum', 'dispersion_pct_ibes'
         ]
         self.target = 'revr'
         self.importance_results = []
@@ -45,14 +46,16 @@ class TreeModelsFeatureImportance:
         print("="*60)
         
         try:
-            # Try momentum dataset first
-            try:
-                self.df = pd.read_csv('data_files/final_merged_dataset_with_momentum_final.csv')
-                print(f"✅ Loaded momentum dataset: {len(self.df):,} observations")
-            except FileNotFoundError:
-                # Fallback to main dataset
-                self.df = pd.read_csv('data_files/final_merged_dataset.csv')
-                print(f"✅ Loaded main dataset: {len(self.df):,} observations")
+            # Use model_df.csv with proper path handling
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            data_dir = os.path.join(script_dir, '..', '..', 'data_files')
+            data_file_path = os.path.join(data_dir, 'model_df.csv')
+            
+            if not os.path.exists(data_file_path):
+                raise FileNotFoundError(f"❌ Dataset file not found: {data_file_path}")
+            
+            self.df = pd.read_csv(data_file_path)
+            print(f"✅ Loaded model dataset: {len(self.df):,} observations")
             
             # Convert earnings_date to datetime
             self.df['earnings_date'] = pd.to_datetime(self.df['earnings_date'])
@@ -327,7 +330,7 @@ class TreeModelsFeatureImportance:
             agreement = feature_summary[feature]['agreement']
             print(f"{i+1:2d}. {feature:25s}: {avg_imp:.4f} (Agreement: {agreement:.3f})")
         
-        # Model agreement analysis
+        # Model agreement analysis (simplified)
         print(f"\nMODEL AGREEMENT ANALYSIS:")
         print("-" * 35)
         
@@ -349,19 +352,6 @@ class TreeModelsFeatureImportance:
         
         correlation = np.corrcoef(rf_importance, xgb_importance)[0, 1]
         print(f"Random Forest ↔ XGBoost correlation: {correlation:.3f}")
-        
-        # Feature-specific agreement
-        print(f"\nHIGH AGREEMENT FEATURES (>0.8):")
-        high_agreement = [f for f in feature_summary.keys() if feature_summary[f]['agreement'] > 0.8]
-        for feature in sorted(high_agreement, key=lambda x: feature_summary[x]['agreement'], reverse=True):
-            agreement = feature_summary[feature]['agreement']
-            print(f"  🟢 {feature:25s}: {agreement:.3f}")
-        
-        print(f"\nLOW AGREEMENT FEATURES (<0.6):")
-        low_agreement = [f for f in feature_summary.keys() if feature_summary[f]['agreement'] < 0.6]
-        for feature in sorted(low_agreement, key=lambda x: feature_summary[x]['agreement']):
-            agreement = feature_summary[feature]['agreement']
-            print(f"  🔴 {feature:25s}: {agreement:.3f}")
         
         # Performance comparison
         print(f"\nMODEL PERFORMANCE COMPARISON:")
@@ -411,9 +401,9 @@ class TreeModelsFeatureImportance:
     
     def _create_tree_comparison_plot(self):
         """Create side-by-side comparison of Random Forest vs XGBoost importance"""
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(20, 8))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 8))
         fig.patch.set_facecolor('white')
-        fig.suptitle('Tree Models Feature Importance Analysis\nRandom Forest vs XGBoost Comparison', 
+        fig.suptitle('Machine Learning Models Feature Importance Analysis\nRandom Forest vs XGBoost Comparison', 
                      fontsize=14, fontweight='bold', color='#003366')
         
         # Calculate average importance for each algorithm
@@ -478,46 +468,14 @@ class TreeModelsFeatureImportance:
                 ax2.text(width + 0.005, bar.get_y() + bar.get_height()/2, 
                         f'{imp:.3f}', ha='left', va='center', fontsize=8, color='#003366')
         
-        # Plot 3: Direct comparison
-        # Calculate differences
-        differences = []
-        agreement_scores = []
-        
-        for feature in self.features:
-            importance_col = f'importance_{feature}'
-            rf_avg = rf_data[importance_col].mean() if len(rf_data) > 0 else 0
-            xgb_avg = xgb_data[importance_col].mean() if len(xgb_data) > 0 else 0
-            diff = rf_avg - xgb_avg
-            differences.append(diff)
-            
-            # Agreement score
-            agreement = 1 - abs(diff) / max(rf_avg, xgb_avg, 0.001)
-            agreement_scores.append(agreement)
-        
-        feature_labels = [f.replace('_', ' ').title() for f in self.features]
-        colors = ['#66CCFF' if d > 0 else '#FF6633' for d in differences]
-        
-        bars3 = ax3.barh(range(len(feature_labels)), differences, color=colors, alpha=0.8, 
-                        edgecolor='white', linewidth=1)
-        
-        ax3.set_yticks(range(len(feature_labels)))
-        ax3.set_yticklabels(feature_labels, fontsize=9)
-        ax3.set_xlabel('Importance Difference\n(RF - XGBoost)', color='#003366', fontweight='semibold')
-        ax3.set_title('Model Agreement', fontweight='bold', color='#003366')
-        ax3.axvline(x=0, color='black', linestyle='-', alpha=0.5)
-        
-        # Add value labels
-        for i, (bar, diff, agreement) in enumerate(zip(bars3, differences, agreement_scores)):
-            width = bar.get_width()
-            x_pos = width + 0.005 if width > 0 else width - 0.005
-            ha = 'left' if width > 0 else 'right'
-            ax3.text(x_pos, bar.get_y() + bar.get_height()/2, 
-                    f'{diff:+.3f}', ha=ha, va='center', fontsize=8, color='#003366')
-        
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/tree_models_feature_importance_comparison.png'
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'tree_models_feature_importance_comparison.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Tree models comparison saved: {output_path}")
         
@@ -621,7 +579,11 @@ class TreeModelsFeatureImportance:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/tree_models_importance_evolution.png'
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'tree_models_importance_evolution.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Importance evolution plot saved: {output_path}")
         
@@ -760,12 +722,16 @@ class TreeModelsFeatureImportance:
         plt.tight_layout()
         
         # Save focused plot
-        output_path = 'output_files/tree_models_focused_analysis.png'
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'tree_models_focused_analysis.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Focused tree analysis saved: {output_path}")
         
         # Save SVG version
-        output_path_svg = 'output_files/tree_models_focused_analysis.svg'
+        output_path_svg = os.path.join(output_dir, 'tree_models_focused_analysis.svg')
         plt.savefig(output_path_svg, format='svg', bbox_inches='tight', facecolor='white')
         print(f"✅ SVG version saved: {output_path_svg}")
         
@@ -824,7 +790,11 @@ class TreeModelsFeatureImportance:
         plt.tight_layout()
         
         # Save plot
-        output_path = 'output_files/tree_models_performance_vs_importance.png'
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(script_dir, 'output_files')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        output_path = os.path.join(output_dir, 'tree_models_performance_vs_importance.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white')
         print(f"✅ Performance vs importance plot saved: {output_path}")
         
@@ -836,8 +806,13 @@ class TreeModelsFeatureImportance:
         print("="*35)
         
         if len(self.importance_results) > 0:
+            # Ensure output directory exists
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            output_dir = os.path.join(script_dir, 'output_files')
+            os.makedirs(output_dir, exist_ok=True)
+            
             # Save detailed results
-            results_path = 'output_files/tree_models_feature_importance_results.csv'
+            results_path = os.path.join(output_dir, 'tree_models_feature_importance_results.csv')
             self.importance_results.to_csv(results_path, index=False)
             print(f"✅ Detailed results saved: {results_path}")
             
@@ -869,7 +844,7 @@ class TreeModelsFeatureImportance:
             summary_df = pd.DataFrame(summary_table)
             summary_df = summary_df.sort_values('average_importance', ascending=False)
             
-            summary_path = 'output_files/tree_models_feature_importance_summary.csv'
+            summary_path = os.path.join(output_dir, 'tree_models_feature_importance_summary.csv')
             summary_df.to_csv(summary_path, index=False)
             print(f"✅ Summary table saved: {summary_path}")
         
@@ -890,7 +865,7 @@ def main():
         print("🌳 TREE MODELS FEATURE IMPORTANCE ANALYSIS")
         print("="*55)
         print("Algorithms: Random Forest vs XGBoost")
-        print("Features: IEVR + normative_iv_rv_ratio + SKEW + KURT + IV_RATIO + SMIRK + vol_hl7 + vol_hl10 + vol_hl21 + z_score_momentum")
+        print("Features: IEVR + normative_iv_rv_ratio + IV_RATIO + SMIRK + vol_hl21 + z_score_momentum + dispersion_pct_ibes")
         print("Methodology: 5-Year Training, 6-Month Testing Rolling Windows")
         print("="*55)
         
